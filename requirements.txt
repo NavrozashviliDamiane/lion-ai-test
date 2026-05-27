@@ -7,3 +7,4 @@ openai
 numpy
 python-dotenv
 json5
+tiktoken
