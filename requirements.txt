@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+redis
+PyMySQL
+openai
+numpy
+python-dotenv
+json5
