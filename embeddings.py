@@ -194,6 +194,25 @@ def search_records_by_intent(query: str, author_id: int = AUTHOR_ID, top_k: int 
     try:
         r = get_redis_connection()
         
+        query_lower = query.lower()
+        count_keywords = ["სულ", "რამდენი", "ჯამი", "total", "count", "how many"]
+        
+        if any(keyword in query_lower for keyword in count_keywords):
+            print(f"Detected count/aggregate query")
+            pattern = f"record:{author_id}:*"
+            keys = r.keys(pattern)
+            total_count = len(keys)
+            
+            return [{
+                "record_id": "AGGREGATE",
+                "similarity": 1.0,
+                "content": {
+                    "id": "AGGREGATE",
+                    "total_records": total_count,
+                    "aggregate_type": "count"
+                }
+            }]
+        
         vin = extract_vin_from_query(query)
         if vin:
             print(f"Detected VIN in query: {vin}")

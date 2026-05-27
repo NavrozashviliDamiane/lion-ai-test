@@ -136,7 +136,10 @@ async def chat(request: ChatRequest):
         
         logger.info(f"Intent Search Results: {len(context_results)} records found")
         for idx, result in enumerate(context_results):
-            logger.info(f"  Result {idx+1}: Record ID {result['record_id']}, Similarity: {result['similarity']:.2f}")
+            if result['record_id'] == 'AGGREGATE':
+                logger.info(f"  Result {idx+1}: AGGREGATE - Total Records: {result['content'].get('total_records')}")
+            else:
+                logger.info(f"  Result {idx+1}: Record ID {result['record_id']}, Similarity: {result['similarity']:.2f}")
         
         field_context = get_field_context()
         field_mapping = get_field_mapping()
@@ -145,13 +148,16 @@ async def chat(request: ChatRequest):
         if context_results:
             context_text = "\n\nრელევანტური ინფორმაცია ბაზიდან:\n"
             for result in context_results:
-                context_text += f"\nჩანაწერი ID {result['record_id']} (მსგავსება: {result['similarity']:.2f}):\n"
-                
                 record = result['content']
-                for key, value in record.items():
-                    if value and key in field_mapping:
-                        label = field_mapping[key]['label']
-                        context_text += f"  • {label}: {value}\n"
+                
+                if result['record_id'] == 'AGGREGATE':
+                    context_text += f"\n**სულ მანქანების რაოდენობა**: {record.get('total_records')}\n"
+                else:
+                    context_text += f"\nჩანაწერი ID {result['record_id']} (მსგავსება: {result['similarity']:.2f}):\n"
+                    for key, value in record.items():
+                        if value and key in field_mapping:
+                            label = field_mapping[key]['label']
+                            context_text += f"  • {label}: {value}\n"
                 
                 context_text += "\n"
         
