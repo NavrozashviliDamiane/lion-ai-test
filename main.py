@@ -1,6 +1,7 @@
 import json
 import redis
 import os
+import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -10,6 +11,18 @@ from openai import OpenAI
 import hashlib
 from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, OPENAI_API_KEY, OPENAI_MODEL, AUTHOR_ID
 from database import fetch_author_data
+
+os.makedirs('logs', exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('logs/chat_ai.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Lion Trans Chat AI", version="1.0.0")
 
@@ -30,9 +43,9 @@ try:
             decode_responses=True
         )
     redis_client.ping()
-    print("✓ Redis connected")
+    logger.info("[OK] Redis connected")
 except Exception as e:
-    print(f"⚠ Redis connection failed: {e}")
+    logger.warning(f"[WARN] Redis connection failed: {e}")
     redis_client = None
 
 
@@ -54,9 +67,9 @@ class ContextBundle:
             with open("query_map.json", "r", encoding="utf-8") as f:
                 self.query_map = json.load(f)
             
-            print("✓ Context bundles loaded successfully")
+            logger.info("[OK] Context bundles loaded successfully")
         except Exception as e:
-            print(f"✗ Error loading context bundles: {e}")
+            logger.error(f"[ERROR] Error loading context bundles: {e}")
             raise
 
 context_bundle = ContextBundle()
@@ -81,7 +94,10 @@ def extract_vin_from_query(query: str) -> Optional[str]:
     vin_pattern = r'[A-HJ-NPR-Z0-9]{17}'
     match = re.search(vin_pattern, query)
     if match:
-        return match.group(0)
+        vin = match.group(0).strip()
+        print(f"[DEBUG] Extracted VIN: {vin}")
+        return vin
+    print(f"[DEBUG] No VIN found in query: {query}")
     return None
 
 
@@ -220,13 +236,23 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
             if not vin:
                 return {"error": "VIN not provided", "records": []}
             
+            print(f"[DEBUG] Searching for VIN: {vin}")
+            print(f"[DEBUG] Total records to search: {len(records)}")
+            
             for record in records:
-                if record.get("vin", "").upper() == vin.upper():
+                record_vin = record.get("vin", "").strip().upper()
+                search_vin = vin.strip().upper()
+                
+                if record_vin == search_vin:
+                    print(f"[DEBUG] VIN FOUND: {record_vin}")
                     return {
                         "vehicle": record,
                         "found": True,
                         "records": [format_car_record(record)]
                     }
+            
+            print(f"[DEBUG] VIN NOT FOUND: {vin}")
+            print(f"[DEBUG] Available VINs: {[r.get('vin') for r in records[:5]]}")
             return {"found": False, "error": f"Vehicle with VIN {vin} not found", "records": []}
         
         elif intent == "vehicle_finance_by_vin":
@@ -333,10 +359,22 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
 
 
 def generate_response(intent: str, result: Dict, user_query: str) -> str:
-    if "error" in result:
+    if "error" in result and not result.get("found") and not result.get("records"):
         return f"❌ {result['error']}"
     
     try:
+        vehicle_info = {}
+        if result.get("vehicle"):
+            vehicle = result.get("vehicle")
+            vehicle_info = {
+                "vin": vehicle.get("vin"),
+                "manufacturer": vehicle.get("manufacturer"),
+                "model": vehicle.get("model"),
+                "year": vehicle.get("year"),
+                "warehouse": vehicle.get("warehouse"),
+                "record_status": vehicle.get("record_status")
+            }
+        
         result_summary = {
             "intent": intent,
             "total": result.get("total", 0),
@@ -352,9 +390,12 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
             "total_pay": result.get("total_pay"),
             "paid": result.get("paid"),
             "balance": result.get("balance"),
+            "vehicle": vehicle_info if vehicle_info else None,
         }
         
         result_summary = {k: v for k, v in result_summary.items() if v is not None}
+        
+        print(f"[DEBUG] Response summary: {result_summary}")
         
         system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant.
 
@@ -410,7 +451,10 @@ async def chat(request: ChatRequest):
     user_query = request.messages[-1].content if request.messages else ""
     author_id = request.author_id or AUTHOR_ID
     
+    logger.info(f"[CHAT] Query from author_id={author_id}: {user_query}")
+    
     if not user_query:
+        logger.warning(f"[CHAT] Empty query from author_id={author_id}")
         raise HTTPException(status_code=400, detail="Empty query")
     
     cache_key = f"chat:{hashlib.md5(f'{author_id}:{user_query}'.encode()).hexdigest()}"
@@ -419,26 +463,36 @@ async def chat(request: ChatRequest):
         try:
             cached_response = redis_client.get(cache_key)
             if cached_response:
+                logger.info(f"[CACHE] HIT for query: {user_query[:50]}...")
                 cached_data = json.loads(cached_response)
                 cached_data["cached"] = True
                 return ChatResponse(**cached_data)
         except Exception as e:
-            print(f"Cache read error: {e}")
+            logger.error(f"[CACHE] Read error: {e}")
     
+    logger.info(f"[DB] Fetching data for author_id={author_id}")
     try:
         records = fetch_author_data(author_id)
+        logger.info(f"[DB] Retrieved {len(records)} records")
     except Exception as e:
+        logger.error(f"[DB] Error: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
     filtered_records = filter_records_by_author(records, author_id)
+    logger.info(f"[FILTER] Filtered to {len(filtered_records)} records for author_id={author_id}")
     
+    logger.info(f"[INTENT] Detecting intent for query: {user_query[:50]}...")
     intent_result = extract_intent_and_fields(user_query)
     intent = intent_result.get("intent", "count_all_my_cars")
     detected_fields = intent_result.get("detected_fields", [])
     parameters = intent_result.get("parameters", {})
+    logger.info(f"[INTENT] Detected: {intent}, Fields: {detected_fields}, Params: {parameters}")
     
+    logger.info(f"[EXECUTE] Executing intent: {intent}")
     query_result = execute_intent(intent, filtered_records, parameters)
+    logger.info(f"[EXECUTE] Result records count: {len(query_result.get('records', []))}")
     
+    logger.info(f"[RESPONSE] Generating response for intent: {intent}")
     response_text = generate_response(intent, query_result, user_query)
     
     records_data = query_result.get("records", [])
@@ -455,9 +509,11 @@ async def chat(request: ChatRequest):
     if redis_client:
         try:
             redis_client.setex(cache_key, 3600, json.dumps(response_data, ensure_ascii=False))
+            logger.info(f"[CACHE] STORED result for query: {user_query[:50]}...")
         except Exception as e:
-            print(f"Cache write error: {e}")
+            logger.error(f"[CACHE] Write error: {e}")
     
+    logger.info(f"[SUCCESS] Query completed: {user_query[:50]}... -> {intent}")
     return ChatResponse(**response_data)
 
 
