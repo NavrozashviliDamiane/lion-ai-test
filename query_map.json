@@ -1,0 +1,170 @@
+{
+  "query_map": [
+    {
+      "intent": "count_all_my_cars",
+      "user_examples": [
+        "სულ რამდენი მანქანა მაქვს?",
+        "რამდენი ავტომობილია ჩემს ბაზაში?"
+      ],
+      "required_fields": [
+        "author"
+      ],
+      "json_logic": "records.filter(r => r.author == CURRENT_DEALER).length",
+      "sql_template": "SELECT COUNT(*) AS total FROM records WHERE author = :current_dealer;",
+      "response": "თქვი ჯამური რაოდენობა მხოლოდ ამ დილერის ჩანაწერებში."
+    },
+    {
+      "intent": "count_by_record_status",
+      "user_examples": [
+        "რამდენია current და რამდენია archive?",
+        "სტატუსების მიხედვით დამითვალე მანქანები"
+      ],
+      "required_fields": [
+        "author",
+        "record_status"
+      ],
+      "json_logic": "groupBy(records.filter(r => r.author == CURRENT_DEALER), 'record_status')",
+      "sql_template": "SELECT record_status, COUNT(*) AS total FROM records WHERE author = :current_dealer GROUP BY record_status;",
+      "response": "დააბრუნე current, archive და ჯამი."
+    },
+    {
+      "intent": "sum_total_balance",
+      "user_examples": [
+        "სულ რამდენი მაქვს დავალიანება?",
+        "ჯამური balance რამდენია?",
+        "რამდენია სულ დარჩენილი გადასახდელი?"
+      ],
+      "required_fields": [
+        "author",
+        "f2"
+      ],
+      "json_logic": "sum(records.filter(r => r.author == CURRENT_DEALER), r => number(r.f2))",
+      "sql_template": "SELECT SUM(f2) AS total_balance FROM records WHERE author = :current_dealer;",
+      "response": "დააბრუნე ჯამური დავალიანება. გამოიყენე მხოლოდ დილერის ჩანაწერები."
+    },
+    {
+      "intent": "cars_with_positive_balance",
+      "user_examples": [
+        "რომელ მანქანებს აქვთ დავალიანება?",
+        "მანქანები balance მეტია 0-ზე"
+      ],
+      "required_fields": [
+        "author",
+        "f2",
+        "vin",
+        "manufacturer",
+        "model",
+        "year"
+      ],
+      "json_logic": "records.filter(r => r.author == CURRENT_DEALER && number(r.f2) > 0)",
+      "sql_template": "SELECT vin, manufacturer, model, year, f2 AS balance FROM records WHERE author = :current_dealer AND f2 > 0 ORDER BY f2 DESC;",
+      "response": "დააბრუნე მანქანების სია VIN/მარკა/მოდელი/წელი/balance-ით."
+    },
+    {
+      "intent": "vehicle_by_vin",
+      "user_examples": [
+        "ამ VIN-ზე მომეცი ინფორმაცია",
+        "VIN-ით მოძებნე მანქანა",
+        "მანქანა სად არის VIN ..."
+      ],
+      "required_fields": [
+        "author",
+        "vin"
+      ],
+      "json_logic": "records.find(r => r.author == CURRENT_DEALER && normalize(r.vin) == normalize(USER_VIN))",
+      "sql_template": "SELECT * FROM records WHERE author = :current_dealer AND vin = :vin LIMIT 1;",
+      "response": "დააბრუნე სრული მანქანის ბარათი: VIN, მარკა, მოდელი, წელი, სტატუსი, ლოკაცია, კონტეინერი, total, balance."
+    },
+    {
+      "intent": "vehicle_finance_by_vin",
+      "user_examples": [
+        "ამ VIN-ზე რამდენი მაქვს გადასახდელი?",
+        "რამდენია total და balance?",
+        "რა გადაიხადა კლიენტმა?"
+      ],
+      "required_fields": [
+        "author",
+        "vin",
+        "f1",
+        "f2",
+        "pm_1",
+        "pm_2",
+        "pm_3",
+        "pm_4",
+        "pm_5"
+      ],
+      "json_logic": "find vehicle by dealer+VIN; paid = sum(pm_1..pm_5); balance = f2 ?? f1-paid",
+      "sql_template": "SELECT vin, f1 AS total_pay, (pm_1+pm_2+pm_3+pm_4+pm_5) AS paid, f2 AS balance FROM records WHERE author=:current_dealer AND vin=:vin LIMIT 1;",
+      "response": "აჩვენე total, გადახდილი ჯამი, თითოეული ტრანში და balance."
+    },
+    {
+      "intent": "cars_by_location_or_stage",
+      "user_examples": [
+        "რომელი მანქანებია საწყობში?",
+        "რომელი მოდის ფოთში?",
+        "რომელი მანქანებია კონტეინერში?"
+      ],
+      "required_fields": [
+        "author",
+        "warehouse",
+        "where_comes",
+        "container_number",
+        "deliver_date",
+        "terminal_out_date"
+      ],
+      "json_logic": "filter by non-empty stage/location fields depending on user phrase",
+      "sql_template": "SELECT vin, manufacturer, model, year, warehouse, where_comes, container_number FROM records WHERE author=:current_dealer AND <stage_condition>;",
+      "response": "დააბრუნე მოკლე სია შესაბამისი ლოგისტიკური ველებით."
+    },
+    {
+      "intent": "group_by_make_model_year",
+      "user_examples": [
+        "მარკების მიხედვით დამითვალე",
+        "რამდენი Toyota მაქვს?",
+        "რომელი წლების მანქანები მაქვს?"
+      ],
+      "required_fields": [
+        "author",
+        "manufacturer",
+        "model",
+        "year"
+      ],
+      "json_logic": "groupBy filtered dealer records by manufacturer/model/year",
+      "sql_template": "SELECT manufacturer, model, year, COUNT(*) AS total FROM records WHERE author=:current_dealer GROUP BY manufacturer, model, year;",
+      "response": "დააბრუნე დაჯგუფებული სტატისტიკა."
+    },
+    {
+      "intent": "records_by_period",
+      "user_examples": [
+        "ამ თვეში ნაყიდი მანქანები",
+        "2026 წლის ჩანაწერები",
+        "ბოლო 30 დღეში ნაყიდი ავტომობილები"
+      ],
+      "required_fields": [
+        "author",
+        "date"
+      ],
+      "json_logic": "filter dealer records where date between DATE_FROM and DATE_TO",
+      "sql_template": "SELECT * FROM records WHERE author=:current_dealer AND date BETWEEN :date_from AND :date_to;",
+      "response": "დააბრუნე პერიოდის ჩანაწერები და რაოდენობა."
+    },
+    {
+      "intent": "missing_documents_or_title",
+      "user_examples": [
+        "რომელ მანქანებს არ აქვთ title?",
+        "საბუთი მიღებულია?",
+        "Title სად არის?"
+      ],
+      "required_fields": [
+        "author",
+        "title_accompanied",
+        "title_received",
+        "title_issued",
+        "refunded"
+      ],
+      "json_logic": "filter dealer records by empty/non-empty title-related fields",
+      "sql_template": "SELECT vin, manufacturer, model, title_accompanied, title_received, title_issued FROM records WHERE author=:current_dealer AND <title_condition>;",
+      "response": "დააბრუნე Title-ის მდგომარეობა და აკლია თუ არა საბუთის ეტაპი."
+    }
+  ]
+}
