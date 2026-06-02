@@ -61,6 +61,7 @@ class ContextBundle:
         self.lion_synonyms = ""
         self.lion_examples = ""
         self.response_rules = ""
+        self.full_context = ""  # Combined context for all files
         self.load_contexts()
     
     def load_contexts(self):
@@ -110,6 +111,42 @@ class ContextBundle:
         if missing_files:
             logger.warning(f"[WARN] {len(missing_files)} context files missing: {', '.join(missing_files)}")
             logger.warning("[WARN] System will continue with available context. Some features may be limited.")
+        
+        # Build combined full context
+        self._build_full_context()
+    
+    def _build_full_context(self):
+        """Build a comprehensive context string with all loaded files"""
+        context_sections = []
+        
+        if self.lion_system:
+            context_sections.append(f"=== SYSTEM RULES ===\n{self.lion_system}\n")
+        
+        if self.lion_intents:
+            context_sections.append(f"=== SUPPORTED INTENTS ===\n{self.lion_intents}\n")
+        
+        if self.lion_fields:
+            context_sections.append(f"=== FIELD DEFINITIONS ===\n{self.lion_fields}\n")
+        
+        if self.lion_finance_fields:
+            context_sections.append(f"=== FINANCIAL FIELDS ===\n{self.lion_finance_fields}\n")
+        
+        if self.lion_synonyms:
+            context_sections.append(f"=== SYNONYMS & NORMALIZATION ===\n{self.lion_synonyms}\n")
+        
+        if self.lion_examples:
+            context_sections.append(f"=== QUERY EXAMPLES ===\n{self.lion_examples}\n")
+        
+        if self.business_rules:
+            context_sections.append(f"=== BUSINESS RULES ===\n{self.business_rules}\n")
+        
+        if self.response_rules:
+            context_sections.append(f"=== RESPONSE RULES ===\n{self.response_rules}\n")
+        
+        if self.redis_rules:
+            context_sections.append(f"=== REDIS CACHING RULES ===\n{self.redis_rules}\n")
+        
+        self.full_context = "\n".join(context_sections)
 
 context_bundle = ContextBundle()
 
@@ -136,31 +173,10 @@ def extract_vin_from_query(query: str) -> Optional[str]:
 
 
 def extract_intent_and_fields(user_query: str) -> Dict[str, Any]:
-    # Build system prompt with available context
-    context_parts = ["You are an intent detection system for a Georgian car dealer management chatbot."]
-    
-    if context_bundle.lion_system:
-        context_parts.append(f"SYSTEM RULES:\n{context_bundle.lion_system}")
-    
-    if context_bundle.lion_intents:
-        context_parts.append(f"SUPPORTED INTENTS:\n{context_bundle.lion_intents}")
-    
-    if context_bundle.lion_fields:
-        context_parts.append(f"FIELD DEFINITIONS:\n{context_bundle.lion_fields}")
-    
-    if context_bundle.lion_finance_fields:
-        context_parts.append(f"FINANCIAL FIELDS:\n{context_bundle.lion_finance_fields}")
-    
-    if context_bundle.lion_synonyms:
-        context_parts.append(f"SYNONYMS AND NORMALIZATION:\n{context_bundle.lion_synonyms}")
-    
-    if context_bundle.lion_examples:
-        context_parts.append(f"EXAMPLES:\n{context_bundle.lion_examples}")
-    
-    if context_bundle.business_rules:
-        context_parts.append(f"BUSINESS RULES:\n{context_bundle.business_rules}")
-    
-    context_parts.append("""
+    system_prompt = f"""You are an intent detection system for a Georgian car dealer management chatbot.
+
+{context_bundle.full_context}
+
 CRITICAL: You MUST only use these exact intents:
 - count_all_my_cars
 - count_by_record_status
@@ -180,11 +196,9 @@ Analyze the user's Georgian query and return a JSON object with:
 - "parameters": Any extracted parameters (like VIN, dates, numbers)
 
 IMPORTANT: If you cannot determine the intent with confidence, return:
-{"intent": "count_all_my_cars", "detected_fields": ["author"], "confidence": 0.5, "parameters": {}}
+{{"intent": "count_all_my_cars", "detected_fields": ["author"], "confidence": 0.5, "parameters": {{}}}}
 
-Respond ONLY with valid JSON, no additional text.""")
-    
-    system_prompt = "\n\n".join(context_parts)
+Respond ONLY with valid JSON, no additional text."""
 
     try:
         response = client.chat.completions.create(
@@ -468,22 +482,10 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         print(f"[DEBUG] Response summary: {result_summary}")
         
-        # Build system prompt with available context
-        context_parts = ["You are a helpful Georgian-speaking car dealer assistant."]
-        
-        if context_bundle.response_rules:
-            context_parts.append(f"RESPONSE RULES:\n{context_bundle.response_rules}")
-        
-        if context_bundle.business_rules:
-            context_parts.append(f"BUSINESS RULES:\n{context_bundle.business_rules}")
-        
-        if context_bundle.lion_fields:
-            context_parts.append(f"FIELD DEFINITIONS:\n{context_bundle.lion_fields}")
-        
-        if context_bundle.lion_finance_fields:
-            context_parts.append(f"FINANCIAL FIELDS:\n{context_bundle.lion_finance_fields}")
-        
-        context_parts.append(f"""
+        system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant.
+
+{context_bundle.full_context}
+
 The user asked: {user_query}
 The system detected intent: {intent}
 The query result summary is: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
@@ -496,9 +498,7 @@ Generate a natural, concise Georgian response that:
 5. Keep it brief (1-3 sentences max)
 6. Follow the response rules for the detected intent
 
-Respond in Georgian only.""")
-        
-        system_prompt = "\n\n".join(context_parts)
+Respond in Georgian only."""
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
