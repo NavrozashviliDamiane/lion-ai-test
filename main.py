@@ -161,11 +161,26 @@ def extract_intent_and_fields(user_query: str) -> Dict[str, Any]:
         context_parts.append(f"BUSINESS RULES:\n{context_bundle.business_rules}")
     
     context_parts.append("""
+CRITICAL: You MUST only use these exact intents:
+- count_all_my_cars
+- count_by_record_status
+- sum_total_balance
+- cars_with_positive_balance
+- vehicle_by_vin
+- vehicle_finance_by_vin
+- group_by_make_model_year
+- cars_by_location_or_stage
+- records_by_period
+- missing_documents_or_title
+
 Analyze the user's Georgian query and return a JSON object with:
-- "intent": The most likely intent from the available intents
+- "intent": MUST be one of the exact intents listed above
 - "detected_fields": List of field names that are relevant to this query
 - "confidence": Confidence score (0-1)
 - "parameters": Any extracted parameters (like VIN, dates, numbers)
+
+IMPORTANT: If you cannot determine the intent with confidence, return:
+{"intent": "count_all_my_cars", "detected_fields": ["author"], "confidence": 0.5, "parameters": {}}
 
 Respond ONLY with valid JSON, no additional text.""")
     
@@ -203,6 +218,9 @@ Respond ONLY with valid JSON, no additional text.""")
         if vin and result.get("intent") in ["vehicle_by_vin", "vehicle_finance_by_vin"]:
             result["parameters"]["vin"] = vin
         
+        # Validate intent
+        result = validate_intent(result)
+        
         return result
     except Exception as e:
         print(f"Error in intent extraction: {e}")
@@ -212,6 +230,32 @@ Respond ONLY with valid JSON, no additional text.""")
             "confidence": 0.0,
             "parameters": {}
         }
+
+
+def validate_intent(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate that the detected intent is in the list of supported intents"""
+    valid_intents = [
+        "count_all_my_cars",
+        "count_by_record_status",
+        "sum_total_balance",
+        "cars_with_positive_balance",
+        "vehicle_by_vin",
+        "vehicle_finance_by_vin",
+        "group_by_make_model_year",
+        "cars_by_location_or_stage",
+        "records_by_period",
+        "missing_documents_or_title"
+    ]
+    
+    intent = result.get("intent", "count_all_my_cars")
+    
+    if intent not in valid_intents:
+        logger.warning(f"[INTENT] Invalid intent detected: {intent}. Defaulting to count_all_my_cars")
+        result["intent"] = "count_all_my_cars"
+        result["detected_fields"] = ["author"]
+        result["confidence"] = 0.3
+    
+    return result
 
 
 def filter_records_by_author(records: List[Dict], author_id: int) -> List[Dict]:
