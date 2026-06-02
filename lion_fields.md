@@ -6,7 +6,6 @@ Description:
 Vehicle status category.
 
 Allowed values:
-
 * current
 * archive
 
