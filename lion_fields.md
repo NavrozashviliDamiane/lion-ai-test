@@ -10,7 +10,6 @@ Allowed values:
 * archive
 
 Meaning:
-
 current = მიმდინარე ავტომობილი
 
 archive = დასრულებული ავტომობილი
