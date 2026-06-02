@@ -22,7 +22,7 @@
       "label": "USA-GEO",
       "category": "location",
       "data_type": "string|null",
-      "business_description": "აღმნიშვნელი სტატუსი სად მიდის მანქანა",
+      "business_description": "აღმნიშვნელი სტატუსი სად მიდის მანქანა USA ში, Ukraine, Geo, ასევე Sale ნიშნავს, ფასდაკლებაზეა თუა რა, For Sale კომპანია ყიდის თუ არა და ასე შემდეგ",
       "source_description": "ამ ველში ქვეყნების სია -და ასევე პარამეტრი ხვდება ცხრილიდან usa_geo.tile , თავის მხრივ განსაზღვრავს სად მიდის ავტომობილი, USA ში, Ukraine, Geo, ასევე Sale ნიშნავს, ფასდაკლებაზეა თუა რა, For Sale კომპანია ყიდის თუ არა და ასე შემდეგ;",
       "synonyms": [
         "ლოკაცია",
