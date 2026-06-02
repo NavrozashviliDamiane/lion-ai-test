@@ -486,6 +486,8 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
 
 {context_bundle.full_context}
 
+IMPORTANT: You are NOT generating JSON. You are generating a human-readable Georgian response.
+
 The user asked: {user_query}
 The system detected intent: {intent}
 The query result summary is: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
@@ -498,19 +500,36 @@ Generate a natural, concise Georgian response that:
 5. Keep it brief (1-3 sentences max)
 6. Follow the response rules for the detected intent
 
-Respond in Georgian only."""
+DO NOT return JSON. Return ONLY Georgian text response."""
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Please provide the response in Georgian."}
+                {"role": "user", "content": f"User query: {user_query}\n\nProvide a natural Georgian response based on the query result summary above. Do not return JSON or code."}
             ],
             temperature=0.7,
             max_tokens=300
         )
         
-        return response.choices[0].message.content.strip()
+        response_text = response.choices[0].message.content.strip()
+        
+        # Safety check: if response looks like JSON, extract the intent and regenerate
+        if response_text.startswith("{") and response_text.endswith("}"):
+            logger.warning(f"[RESPONSE] AI returned JSON instead of Georgian text. Regenerating...")
+            # Retry with stricter instructions
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a Georgian language assistant. You ONLY respond in Georgian language. Never return JSON, code, or any structured format. Only return natural Georgian text."},
+                    {"role": "user", "content": f"User asked: {user_query}\n\nBased on the data: {json.dumps(result_summary, ensure_ascii=False)}\n\nRespond in Georgian only. No JSON. No code. Only Georgian text."}
+                ],
+                temperature=0.7,
+                max_tokens=300
+            )
+            response_text = response.choices[0].message.content.strip()
+        
+        return response_text
     except Exception as e:
         return f"⚠️ Response generation error: {str(e)}"
 
