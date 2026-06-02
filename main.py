@@ -51,42 +51,37 @@ except Exception as e:
 
 class ContextBundle:
     def __init__(self):
-        self.agent_context = {}
-        self.fields_context = {}
-        self.query_map = {}
+        self.business_rules = ""
+        self.redis_rules = ""
+        self.response_example = []
         self.load_contexts()
     
     def load_contexts(self):
         try:
-            with open("agent_context_bundle.json", "r", encoding="utf-8") as f:
-                self.agent_context = json.load(f)
+            with open("lion_ai_rule.md", "r", encoding="utf-8") as f:
+                self.business_rules = f.read()
             
-            with open("fields_context.json", "r", encoding="utf-8") as f:
-                self.fields_context = json.load(f)
+            with open("redis_query_rules.md", "r", encoding="utf-8") as f:
+                self.redis_rules = f.read()
             
-            with open("query_map.json", "r", encoding="utf-8") as f:
-                self.query_map = json.load(f)
+            with open("response-example.json", "r", encoding="utf-8") as f:
+                self.response_example = json.load(f)
             
-            logger.info("[OK] Context bundles loaded successfully")
+            logger.info("[OK] Context loaded: business rules, redis rules, and response example")
         except Exception as e:
-            logger.error(f"[ERROR] Error loading context bundles: {e}")
+            logger.error(f"[ERROR] Error loading context: {e}")
             raise
 
 context_bundle = ContextBundle()
 
 
-def get_field_by_name(field_name: str) -> Optional[Dict]:
-    for field in context_bundle.fields_context.get("fields", []):
-        if field.get("field_name") == field_name:
-            return field
-    return None
-
-
-def get_intent_by_name(intent_name: str) -> Optional[Dict]:
-    for intent in context_bundle.query_map.get("query_map", []):
-        if intent.get("intent") == intent_name:
-            return intent
-    return None
+def get_response_example_structure() -> str:
+    """Returns a formatted string showing the structure of response data"""
+    if context_bundle.response_example:
+        example = context_bundle.response_example[0]
+        fields = list(example.keys())
+        return f"Available fields: {', '.join(fields[:20])}..."
+    return "No example data available"
 
 
 def extract_vin_from_query(query: str) -> Optional[str]:
@@ -102,8 +97,11 @@ def extract_vin_from_query(query: str) -> Optional[str]:
 
 
 def extract_intent_and_fields(user_query: str) -> Dict[str, Any]:
-    system_prompt = """You are an intent detection system for a Georgian car dealer management chatbot.
-    
+    system_prompt = f"""You are an intent detection system for a Georgian car dealer management chatbot.
+
+Business Context:
+{context_bundle.business_rules}
+
 Analyze the user's Georgian query and return a JSON object with:
 - "intent": The most likely intent from the available intents
 - "detected_fields": List of field names that are relevant to this query
@@ -189,52 +187,45 @@ def format_car_record(record: Dict) -> Dict:
 
 def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) -> Any:
     if not records:
-        return {"error": "No records found for this dealer", "records": []}
+        return {"error": "No records found for this dealer"}
     
     try:
         if intent == "count_all_my_cars":
             return {
                 "total": len(records),
-                "status": "success",
-                "records": [format_car_record(r) for r in records]
+                "status": "success"
             }
         
         elif intent == "count_by_record_status":
             status_counts = {}
-            status_records = {}
             for record in records:
                 status = record.get("record_status", "unknown")
                 status_counts[status] = status_counts.get(status, 0) + 1
-                if status not in status_records:
-                    status_records[status] = []
-                status_records[status].append(format_car_record(record))
             
             return {
                 "by_status": status_counts,
-                "total": len(records),
-                "records_by_status": status_records
+                "total": len(records)
             }
         
         elif intent == "sum_total_balance":
             total_balance = sum(float(r.get("f2", 0) or 0) for r in records)
+            cars_with_debt = len([r for r in records if float(r.get("f2", 0) or 0) > 0])
             return {
                 "total_balance": total_balance,
                 "currency": "GEL",
-                "records": [format_car_record(r) for r in records if float(r.get("f2", 0) or 0) > 0]
+                "cars_with_debt": cars_with_debt
             }
         
         elif intent == "cars_with_positive_balance":
-            cars = [format_car_record(r) for r in records if float(r.get("f2", 0) or 0) > 0]
+            count = len([r for r in records if float(r.get("f2", 0) or 0) > 0])
             return {
-                "cars": cars,
-                "count": len(cars),
-                "records": cars
+                "count": count
             }
         
         elif intent == "vehicle_by_vin":
             vin = parameters.get("vin") if parameters else None
             if not vin:
-                return {"error": "VIN not provided", "records": []}
+                return {"error": "VIN not provided"}
             
             print(f"[DEBUG] Searching for VIN: {vin}")
             print(f"[DEBUG] Total records to search: {len(records)}")
@@ -247,18 +238,17 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
                     print(f"[DEBUG] VIN FOUND: {record_vin}")
                     return {
                         "vehicle": record,
-                        "found": True,
-                        "records": [format_car_record(record)]
+                        "found": True
                     }
             
             print(f"[DEBUG] VIN NOT FOUND: {vin}")
             print(f"[DEBUG] Available VINs: {[r.get('vin') for r in records[:5]]}")
-            return {"found": False, "error": f"Vehicle with VIN {vin} not found", "records": []}
+            return {"found": False, "error": f"Vehicle with VIN {vin} not found"}
         
         elif intent == "vehicle_finance_by_vin":
             vin = parameters.get("vin") if parameters else None
             if not vin:
-                return {"error": "VIN not provided", "records": []}
+                return {"error": "VIN not provided"}
             
             for record in records:
                 if record.get("vin", "").upper() == vin.upper():
@@ -277,42 +267,33 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
                             "pm_3": float(record.get("pm_3", 0) or 0),
                             "pm_4": float(record.get("pm_4", 0) or 0),
                             "pm_5": float(record.get("pm_5", 0) or 0),
-                        },
-                        "records": [format_car_record(record)]
+                        }
                     }
-            return {"found": False, "error": f"Vehicle with VIN {vin} not found", "records": []}
+            return {"found": False, "error": f"Vehicle with VIN {vin} not found"}
         
         elif intent == "group_by_make_model_year":
             grouped = {}
-            grouped_records = {}
             for record in records:
                 make = record.get("manufacturer", "Unknown")
                 model = record.get("model", "Unknown")
                 year = record.get("year", "Unknown")
                 key = f"{make} {model} ({year})"
                 grouped[key] = grouped.get(key, 0) + 1
-                if key not in grouped_records:
-                    grouped_records[key] = []
-                grouped_records[key].append(format_car_record(record))
             
             return {
                 "grouped": grouped,
-                "total": len(records),
-                "records_by_group": grouped_records
+                "total": len(records)
             }
         
         elif intent == "cars_by_location_or_stage":
             locations = {}
             for record in records:
                 warehouse = record.get("warehouse", "Unknown")
-                if warehouse not in locations:
-                    locations[warehouse] = []
-                locations[warehouse].append(format_car_record(record))
+                locations[warehouse] = locations.get(warehouse, 0) + 1
             
             return {
-                "by_location": {k: len(v) for k, v in locations.items()},
-                "total": len(records),
-                "records_by_location": locations
+                "by_location": locations,
+                "total": len(records)
             }
         
         elif intent == "records_by_period":
@@ -327,35 +308,32 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
             else:
                 cutoff = datetime.now() - timedelta(days=30)
             
-            filtered = []
+            filtered_count = 0
             for record in records:
                 date_str = record.get("date", "")
                 try:
                     record_date = datetime.strptime(date_str, "%Y-%m-%d")
                     if record_date >= cutoff:
-                        filtered.append(record)
+                        filtered_count += 1
                 except:
                     pass
             
             return {
-                "records": [format_car_record(r) for r in filtered],
-                "count": len(filtered),
+                "count": filtered_count,
                 "period": period
             }
         
         elif intent == "missing_documents_or_title":
-            missing = [r for r in records if not r.get("title_received")]
+            missing_count = len([r for r in records if not r.get("title_received")])
             return {
-                "missing_title": [format_car_record(r) for r in missing],
-                "count": len(missing),
-                "records": [format_car_record(r) for r in missing]
+                "count": missing_count
             }
         
         else:
-            return {"error": f"Unknown intent: {intent}", "records": []}
+            return {"error": f"Unknown intent: {intent}"}
     
     except Exception as e:
-        return {"error": str(e), "records": []}
+        return {"error": str(e)}
 
 
 def generate_response(intent: str, result: Dict, user_query: str) -> str:
@@ -399,6 +377,9 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant.
 
+Business Rules and Context:
+{context_bundle.business_rules}
+
 The user asked: {user_query}
 The system detected intent: {intent}
 The query result summary is: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
@@ -409,6 +390,7 @@ Generate a natural, concise Georgian response that:
 3. Is business-appropriate and helpful
 4. Uses Georgian language naturally
 5. Keep it brief (1-3 sentences max)
+6. Follow the response guidelines from business rules
 
 Respond in Georgian only."""
 
@@ -435,6 +417,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     author_id: Optional[int] = None
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -443,15 +426,19 @@ class ChatResponse(BaseModel):
     detected_fields: List[str]
     cached: bool
     timestamp: str
-    records: Optional[List[Dict]] = []
+    records: List[Dict] = []
+    session_id: str
 
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
+    import uuid
+    
     user_query = request.messages[-1].content if request.messages else ""
     author_id = request.author_id or AUTHOR_ID
+    session_id = request.session_id or str(uuid.uuid4())
     
-    logger.info(f"[CHAT] Query from author_id={author_id}: {user_query}")
+    logger.info(f"[CHAT] Session={session_id}, Author={author_id}, Query={user_query[:50]}...")
     
     if not user_query:
         logger.warning(f"[CHAT] Empty query from author_id={author_id}")
@@ -495,15 +482,14 @@ async def chat(request: ChatRequest):
     logger.info(f"[RESPONSE] Generating response for intent: {intent}")
     response_text = generate_response(intent, query_result, user_query)
     
-    records_data = query_result.get("records", [])
-    
     response_data = {
         "response": response_text,
         "intent": intent,
         "detected_fields": detected_fields,
         "cached": False,
         "timestamp": datetime.now().isoformat(),
-        "records": records_data
+        "records": [],
+        "session_id": session_id
     }
     
     if redis_client:
@@ -513,8 +499,37 @@ async def chat(request: ChatRequest):
         except Exception as e:
             logger.error(f"[CACHE] Write error: {e}")
     
-    logger.info(f"[SUCCESS] Query completed: {user_query[:50]}... -> {intent}")
+    logger.info(f"[SUCCESS] Session={session_id}, Query completed: {user_query[:50]}... -> {intent}")
     return ChatResponse(**response_data)
+
+
+@app.get("/session/{session_id}")
+async def get_session(session_id: str, author_id: Optional[int] = None):
+    author_id = author_id or AUTHOR_ID
+    
+    if not redis_client:
+        return {"error": "Redis not connected", "session_id": session_id}
+    
+    try:
+        session_key = f"session:{author_id}:{session_id}"
+        session_data = redis_client.get(session_key)
+        
+        if session_data:
+            return {
+                "session_id": session_id,
+                "author_id": author_id,
+                "history": json.loads(session_data)
+            }
+        else:
+            return {
+                "session_id": session_id,
+                "author_id": author_id,
+                "history": [],
+                "message": "No session history found"
+            }
+    except Exception as e:
+        logger.error(f"[SESSION] Error retrieving session {session_id}: {e}")
+        return {"error": str(e), "session_id": session_id}
 
 
 @app.get("/context-guidance")
@@ -529,10 +544,8 @@ async def context_guidance(query: str, author_id: Optional[int] = None):
         "confidence": intent_result.get("confidence"),
         "detected_fields": intent_result.get("detected_fields"),
         "parameters": intent_result.get("parameters"),
-        "intent_details": get_intent_by_name(intent_result.get("intent")),
-        "field_details": [
-            get_field_by_name(field) for field in intent_result.get("detected_fields", [])
-        ]
+        "context_source": "lion_ai_rule.md",
+        "response_structure": get_response_example_structure()
     }
 
 
@@ -541,8 +554,125 @@ async def health():
     return {
         "status": "healthy",
         "redis": "connected" if redis_client else "disconnected",
-        "contexts_loaded": bool(context_bundle.agent_context)
+        "contexts_loaded": bool(context_bundle.business_rules),
+        "context_files": {
+            "business_rules": "lion_ai_rule.md",
+            "redis_rules": "redis_query_rules.md",
+            "response_example": "response-example.json"
+        }
     }
+
+
+@app.get("/cache/refresh")
+async def cache_refresh():
+    if not redis_client:
+        return {"status": "error", "message": "Redis not connected"}
+    
+    try:
+        redis_client.flushall()
+        logger.info("[CACHE] Cache refreshed - all keys deleted")
+        return {
+            "status": "success",
+            "message": "Cache cleared successfully",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[CACHE] Refresh error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    if not redis_client:
+        return {"status": "error", "message": "Redis not connected"}
+    
+    try:
+        info = redis_client.info()
+        keys = redis_client.keys('chat:*')
+        return {
+            "status": "success",
+            "total_keys": len(keys),
+            "memory_used": info.get('used_memory_human'),
+            "connected_clients": info.get('connected_clients'),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[CACHE] Stats error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/aggregation")
+async def aggregation(author_id: Optional[int] = None):
+    author_id = author_id or AUTHOR_ID
+    
+    logger.info(f"[AGGREGATION] Computing stats for author_id={author_id}")
+    
+    try:
+        records = fetch_author_data(author_id)
+        
+        if not records:
+            return {
+                "status": "success",
+                "author_id": author_id,
+                "total_cars_in_db": 0,
+                "total_cars_for_author": 0,
+                "data": {}
+            }
+        
+        filtered_records = filter_records_by_author(records, author_id)
+        
+        total_balance = sum(float(r.get("f2", 0) or 0) for r in filtered_records)
+        total_pay = sum(float(r.get("f1", 0) or 0) for r in filtered_records)
+        
+        status_counts = {}
+        for record in filtered_records:
+            status = record.get("record_status", "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+        
+        manufacturer_counts = {}
+        for record in filtered_records:
+            make = record.get("manufacturer", "Unknown")
+            manufacturer_counts[make] = manufacturer_counts.get(make, 0) + 1
+        
+        warehouse_counts = {}
+        for record in filtered_records:
+            warehouse = record.get("warehouse", "Unknown")
+            warehouse_counts[warehouse] = warehouse_counts.get(warehouse, 0) + 1
+        
+        cars_with_debt = len([r for r in filtered_records if float(r.get("f2", 0) or 0) > 0])
+        
+        logger.info(f"[AGGREGATION] Total in DB: {len(records)}, For author {author_id}: {len(filtered_records)}, balance={total_balance}")
+        
+        return {
+            "status": "success",
+            "author_id": author_id,
+            "total_cars_in_db": len(records),
+            "total_cars_for_author": len(filtered_records),
+            "data": {
+                "total_balance": total_balance,
+                "total_pay": total_pay,
+                "cars_with_debt": cars_with_debt,
+                "by_status": status_counts,
+                "by_manufacturer": manufacturer_counts,
+                "by_warehouse": warehouse_counts
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[AGGREGATION] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 
 @app.get("/")
@@ -553,7 +683,10 @@ async def root():
         "endpoints": {
             "chat": "POST /chat - Send a Georgian query",
             "context_guidance": "GET /context-guidance - Get intent and field detection",
-            "health": "GET /health - Health check"
+            "health": "GET /health - Health check",
+            "cache_refresh": "GET /cache/refresh - Clear all cache",
+            "cache_stats": "GET /cache/stats - Cache statistics",
+            "aggregation": "GET /aggregation - Get dealer statistics and aggregations"
         }
     }
 
