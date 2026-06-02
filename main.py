@@ -54,6 +54,13 @@ class ContextBundle:
         self.business_rules = ""
         self.redis_rules = ""
         self.response_example = []
+        self.lion_system = ""
+        self.lion_intents = ""
+        self.lion_fields = ""
+        self.lion_finance_fields = ""
+        self.lion_synonyms = ""
+        self.lion_examples = ""
+        self.response_rules = ""
         self.load_contexts()
     
     def load_contexts(self):
@@ -67,7 +74,28 @@ class ContextBundle:
             with open("response-example.json", "r", encoding="utf-8") as f:
                 self.response_example = json.load(f)
             
-            logger.info("[OK] Context loaded: business rules, redis rules, and response example")
+            with open("lion_system.md", "r", encoding="utf-8") as f:
+                self.lion_system = f.read()
+            
+            with open("lion_intents.md", "r", encoding="utf-8") as f:
+                self.lion_intents = f.read()
+            
+            with open("lion_fields.md", "r", encoding="utf-8") as f:
+                self.lion_fields = f.read()
+            
+            with open("lion_finance-fields.md", "r", encoding="utf-8") as f:
+                self.lion_finance_fields = f.read()
+            
+            with open("lion_synonyms.md", "r", encoding="utf-8") as f:
+                self.lion_synonyms = f.read()
+            
+            with open("lion_examples.md", "r", encoding="utf-8") as f:
+                self.lion_examples = f.read()
+            
+            with open("response-rules.md", "r", encoding="utf-8") as f:
+                self.response_rules = f.read()
+            
+            logger.info("[OK] Context loaded: all lion_*.md files, response-rules.md, redis rules, and response example")
         except Exception as e:
             logger.error(f"[ERROR] Error loading context: {e}")
             raise
@@ -99,7 +127,25 @@ def extract_vin_from_query(query: str) -> Optional[str]:
 def extract_intent_and_fields(user_query: str) -> Dict[str, Any]:
     system_prompt = f"""You are an intent detection system for a Georgian car dealer management chatbot.
 
-Business Context:
+SYSTEM RULES:
+{context_bundle.lion_system}
+
+SUPPORTED INTENTS:
+{context_bundle.lion_intents}
+
+FIELD DEFINITIONS:
+{context_bundle.lion_fields}
+
+FINANCIAL FIELDS:
+{context_bundle.lion_finance_fields}
+
+SYNONYMS AND NORMALIZATION:
+{context_bundle.lion_synonyms}
+
+EXAMPLES:
+{context_bundle.lion_examples}
+
+BUSINESS RULES:
 {context_bundle.business_rules}
 
 Analyze the user's Georgian query and return a JSON object with:
@@ -107,18 +153,6 @@ Analyze the user's Georgian query and return a JSON object with:
 - "detected_fields": List of field names that are relevant to this query
 - "confidence": Confidence score (0-1)
 - "parameters": Any extracted parameters (like VIN, dates, numbers)
-
-Available intents:
-- count_all_my_cars
-- count_by_record_status
-- sum_total_balance
-- cars_with_positive_balance
-- vehicle_by_vin
-- vehicle_finance_by_vin
-- group_by_make_model_year
-- cars_by_location_or_stage
-- records_by_period
-- missing_documents_or_title
 
 Respond ONLY with valid JSON, no additional text."""
 
@@ -377,8 +411,17 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant.
 
-Business Rules and Context:
+RESPONSE RULES:
+{context_bundle.response_rules}
+
+BUSINESS RULES:
 {context_bundle.business_rules}
+
+FIELD DEFINITIONS:
+{context_bundle.lion_fields}
+
+FINANCIAL FIELDS:
+{context_bundle.lion_finance_fields}
 
 The user asked: {user_query}
 The system detected intent: {intent}
@@ -390,7 +433,7 @@ Generate a natural, concise Georgian response that:
 3. Is business-appropriate and helpful
 4. Uses Georgian language naturally
 5. Keep it brief (1-3 sentences max)
-6. Follow the response guidelines from business rules
+6. Follow the response rules for the detected intent
 
 Respond in Georgian only."""
 
