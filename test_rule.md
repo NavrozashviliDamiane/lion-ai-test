@@ -261,7 +261,7 @@ When the user provides a VIN code and asks about financial details (balance, pay
 
 1. Find the vehicle record with matching VIN
 2. Extract financial fields: f1 (total pay), f2 (balance), manufacturer, model, Auction, Purcase date
-3. Respond with format: "[MANUFACTURER] [MODEL] - Total: [F1] USD, Balance: [F2] USD"
+3. Respond with format: "[MANUFACTURER] - [MODEL] - Total: [F1] USD, Balance: [F2] USD"
 
 Example:
 - User input: "1VWAP7A31EC021766 ფინანსური მდგომარეობა"
