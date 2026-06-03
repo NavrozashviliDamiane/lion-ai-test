@@ -10,6 +10,8 @@ venv/
 .gitignore
 .env
 .env.example
+# Exclude all .md files except test_rule.md
 *.md
+!test_rule.md
 .DS_Store
 *.log
