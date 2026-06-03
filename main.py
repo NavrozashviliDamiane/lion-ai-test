@@ -525,27 +525,40 @@ async def chat(request: ChatRequest):
     
     cache_key = f"chat:{hashlib.md5(f'{author_id}:{user_query}'.encode()).hexdigest()}"
     
+    # Check if records are cached (not the response)
+    cached_records = None
     if redis_client:
         try:
-            cached_response = redis_client.get(cache_key)
-            if cached_response:
-                logger.info(f"[CACHE] HIT for query: {user_query[:50]}...")
-                cached_data = json.loads(cached_response)
-                cached_data["cached"] = True
-                return ChatResponse(**cached_data)
+            cached_data = redis_client.get(cache_key)
+            if cached_data:
+                logger.info(f"[CACHE] HIT for records: {user_query[:50]}...")
+                cached_records = json.loads(cached_data)
         except Exception as e:
             logger.error(f"[CACHE] Read error: {e}")
     
-    logger.info(f"[DB] Fetching data for author_id={author_id}")
-    try:
-        records = fetch_author_data(author_id)
-        logger.info(f"[DB] Retrieved {len(records)} records")
-    except Exception as e:
-        logger.error(f"[DB] Error: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-    
-    filtered_records = filter_records_by_author(records, author_id)
-    logger.info(f"[FILTER] Filtered to {len(filtered_records)} records for author_id={author_id}")
+    # Use cached records if available, otherwise fetch from DB
+    if cached_records:
+        filtered_records = cached_records
+        logger.info(f"[CACHE] Using cached records: {len(filtered_records)} records")
+    else:
+        logger.info(f"[DB] Fetching data for author_id={author_id}")
+        try:
+            records = fetch_author_data(author_id)
+            logger.info(f"[DB] Retrieved {len(records)} records")
+        except Exception as e:
+            logger.error(f"[DB] Error: {e}")
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        
+        filtered_records = filter_records_by_author(records, author_id)
+        logger.info(f"[FILTER] Filtered to {len(filtered_records)} records for author_id={author_id}")
+        
+        # Cache only the records
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, 3600, json.dumps(filtered_records, ensure_ascii=False))
+                logger.info(f"[CACHE] STORED records for query: {user_query[:50]}...")
+            except Exception as e:
+                logger.error(f"[CACHE] Write error: {e}")
     
     logger.info(f"[INTENT] Detecting intent for query: {user_query[:50]}...")
     intent_result = extract_intent_and_fields(user_query)
