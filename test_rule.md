@@ -57,7 +57,6 @@ When:
 ```text
 record_status = "current"
 ```
-
 Meaning:
  
 * Vehicle is still active.
