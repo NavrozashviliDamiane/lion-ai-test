@@ -58,9 +58,9 @@ except Exception as e:
 
 class ContextBundle:
     def __init__(self):
-        self.test_rule = ""  # test_rule.md
-        self.redis_guide = ""  # redis_query_guide.md
+        self.test_rule = ""  # test_rule.md (centralized context)
         self.response_example = None  # response-example.json
+        self.fields_context = None  # fields_context.json (field definitions)
         self.full_context = ""  # Combined context
         self.load_contexts()
     
@@ -71,8 +71,8 @@ class ContextBundle:
         # Format: (filename, attribute_name, file_type)
         files_to_load = [
             ("test_rule.md", "test_rule", "text"),
-            ("redis_query_guide.md", "redis_guide", "text"),
             ("response-example.json", "response_example", "json"),
+            ("fields_context_concise.json", "fields_context", "json"),
         ]
         
         loaded_files = []
@@ -113,11 +113,13 @@ class ContextBundle:
         """Build a comprehensive context string with loaded files"""
         context_sections = []
         
-        if self.redis_guide:
-            context_sections.append(f"## REDIS QUERY GUIDE\n{self.redis_guide}\n")
-        
         if self.test_rule:
-            context_sections.append(f"## TEST RULES\n{self.test_rule}\n")
+            context_sections.append(f"{self.test_rule}\n")
+        
+        if self.fields_context:
+            # Include concise field definitions
+            fields_str = json.dumps(self.fields_context, ensure_ascii=False, indent=2)
+            context_sections.append(f"## FIELD DEFINITIONS\n{fields_str}\n")
         
         if self.response_example:
             # Format response example as readable context
@@ -127,6 +129,83 @@ class ContextBundle:
         self.full_context = "\n".join(context_sections)
 
 context_bundle = ContextBundle()
+
+
+def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
+    """Execute the AI-generated query intent on the loaded records"""
+    import random
+    
+    if not query_intent or not records:
+        return {"error": "No query intent or records", "records": []}
+    
+    query_type = query_intent.get("type", "unknown")
+    filters = query_intent.get("filters", {})
+    fields_needed = query_intent.get("fields_needed", [])
+    limit = query_intent.get("limit")
+    
+    logger.info(f"[EXECUTE AI QUERY] Type: {query_type}, Filters: {filters}, Fields: {fields_needed}, Limit: {limit}")
+    
+    # Start with all records
+    filtered = records
+    
+    # Apply filters
+    if filters:
+        for field, value in filters.items():
+            logger.info(f"[EXECUTE AI QUERY] Filtering by {field} = {value}")
+            filtered = [r for r in filtered if r.get(field) == value]
+    
+    logger.info(f"[EXECUTE AI QUERY] After filtering: {len(filtered)} records")
+    
+    # Handle different query types
+    if query_type == "random":
+        # Pick random record(s)
+        if limit and limit > 0:
+            result_records = random.sample(filtered, min(limit, len(filtered)))
+        else:
+            result_records = random.sample(filtered, min(1, len(filtered)))
+    
+    elif query_type == "calculation":
+        # For COUNT queries, calculate breakdown by status if no filters
+        result = {
+            "count": len(filtered),
+            "total": len(records),
+            "records": filtered[:10] if fields_needed else []
+        }
+        
+        # If no filters, calculate breakdown by record_status
+        if not filters:
+            current_count = len([r for r in records if r.get("record_status") == "current"])
+            archive_count = len([r for r in records if r.get("record_status") == "archive"])
+            result["current_count"] = current_count
+            result["archive_count"] = archive_count
+            logger.info(f"[EXECUTE AI QUERY] Breakdown: current={current_count}, archive={archive_count}")
+        
+        return result
+    
+    elif query_type == "filter":
+        # Return filtered records
+        if limit:
+            result_records = filtered[:limit]
+        else:
+            result_records = filtered
+    
+    else:  # semantic, hybrid, or unknown
+        result_records = filtered
+    
+    # Extract only requested fields if specified
+    if fields_needed and result_records:
+        result_records = [
+            {field: record.get(field) for field in fields_needed if field in record}
+            for record in result_records
+        ]
+    
+    logger.info(f"[EXECUTE AI QUERY] Returning {len(result_records)} records")
+    
+    return {
+        "count": len(result_records),
+        "total": len(records),
+        "records": result_records
+    }
 
 
 def get_response_example_structure() -> str:
@@ -459,6 +538,8 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
             "intent": intent,
             "total": result.get("total", 0),
             "count": result.get("count", 0),
+            "current_count": result.get("current_count"),
+            "archive_count": result.get("archive_count"),
             "total_balance": result.get("total_balance"),
             "currency": result.get("currency"),
             "period": result.get("period"),
@@ -477,59 +558,150 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         print(f"[DEBUG] Response summary: {result_summary}")
         
-        system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant with Redis query understanding.
+        system_prompt = f"""You are a COMPLETELY FREE AI for Lion Trans car dealer system.
 
 {context_bundle.full_context}
 
-HOW THIS WORKS:
-1. You understand what Redis query would be needed (from REDIS QUERY GUIDE)
-2. The backend EXECUTES that Redis query for you
-3. You receive only the RESULTS (counts, data, etc)
-4. You format the response in Georgian following TEST RULES
+YOU HAVE TOTAL FREEDOM:
+- You understand field definitions from FIELD DEFINITIONS section
+- You generate ANY Redis query needed to answer the user's question
+- You match Georgian words to field names using Georgian synonyms
+- You decide what data to extract and how to respond
+- You are NOT limited to predefined intents or rules
+- You can query ANY field, ANY combination, ANY way needed
 
-QUERY ANALYSIS:
-User asked: {user_query}
-System detected intent: {intent}
-Query result summary (from Redis execution): {json.dumps(result_summary, ensure_ascii=False, indent=2)}
+AVAILABLE DATA:
+- Total records available: {len(result.get('records', []))} vehicles
+- All fields available in FIELD DEFINITIONS
+- All records belong to author_id: {result.get('author_id', 'unknown')}
+
+CONTEXT FOR THIS QUERY:
+User asked (Georgian): {user_query}
+Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
 
 YOUR TASK:
-1. THINK: What Redis query would answer this question?
-   - Use the REDIS QUERY GUIDE to understand patterns
-   - Consider what fields and filtering are needed
-   
-2. RESPOND: Format the results in Georgian
-   - Use the provided result summary
-   - Follow the TEST RULES exactly
-   - Return ONLY Georgian text
 
-IMPORTANT:
-- The backend has ALREADY executed the Redis query
-- You receive the RESULTS, not raw data
-- Use the numbers/data provided in the query result summary
-- Do NOT include query logic in your response
-- Do NOT return JSON or code
+STEP 1 - UNDERSTAND THE GEORGIAN QUERY:
+- Read the user's Georgian question carefully
+- Match Georgian words to FIELD DEFINITIONS using Georgian synonyms (after |)
+- Examples:
+  * "ვინ კოდი" → vin field (17-char vehicle identifier)
+  * "წელი" → year field (manufacturing year)
+  * "საწყობი" → warehouse field (location)
+  * "დილერი" → author field (dealer name)
+  * "რამდენი" → COUNT query (how many)
+  * "რომელი" → FILTER query (which ones)
+  * "რენდომად" → pick any/random record
+  * "ნებისმიერი" → any/random
+- Understand what the user really wants
+- Determine what query is needed
 
-RESPONSE REQUIREMENTS:
-- Answer the user's question directly using the provided results
-- Present numbers and data clearly
-- Use Georgian language naturally
-- Keep it brief (1-3 sentences max)
-- Follow the response rules for the detected intent
-- ONLY return Georgian text
+STEP 2 - GENERATE THE QUERY:
+Create a query that would answer the user's question:
+- FILTER: Extract specific records matching criteria (e.g., year = 2015, vin = "ABC123")
+- SEMANTIC: Search by text/description (e.g., cars with damage)
+- CALCULATION: Aggregations (e.g., SUM f2, COUNT by status, AVG container_amount)
+  * COUNT queries: "რამდენი" (how many), "სულ" (total) → COUNT records with filters
+  * SUM queries: "სულ თანხა" (total amount) → SUM f1 or f2
+  * GROUP queries: "დაჯგუფე" (group by) → GROUP BY field
+- RANDOM: Pick any record from available data
+- HYBRID: Combination of above
 
-Generate ONLY the Georgian response text now."""
+Output a JSON intent with:
+- type: filter|semantic|calculation|random|hybrid
+- query_description: What query you would create
+- fields_needed: Which fields to extract
+- filters: Any filters to apply (e.g., {{"record_status": "current"}})
+- limit: How many records to return (1 for random, N for multiple, null for all)
+- georgian_understanding: What Georgian words you matched
+
+STEP 3 - RESPOND NATURALLY:
+Generate response based on the query results.
+Be conversational, precise, contextual.
+Use Georgian naturally.
+Provide actual data from the query.
+
+CRITICAL RULES:
+- FIRST output the JSON query intent
+- THEN output the Georgian response
+- Separate with: ---RESPONSE---
+- The JSON must be valid
+- The response must be ONLY Georgian text
+- Be creative and flexible with queries
+- If user asks for "any/random", pick one record
+- If user asks for counts, calculate from data
+- If user asks for specific field, extract it
+- Match Georgian words to fields using synonyms
+- ALWAYS validate field names against FIELD DEFINITIONS (check Georgian synonyms)
+- Use the actual data provided in result_summary (current_count, archive_count, etc)
+- Never hallucinate numbers - use only data from result_summary
+
+OUTPUT FORMAT:
+```json
+{{"type": "...", "query_description": "...", "fields_needed": [...], "filters": {{...}}, "limit": N, "georgian_understanding": {{...}}}}
+```
+
+---RESPONSE---
+
+[Your Georgian response here]"""
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"User query: {user_query}\n\nProvide a natural Georgian response based on the query result summary above. Do not return JSON or code."}
+                {"role": "user", "content": f"User query: {user_query}\n\nIMPORTANT: You MUST output in this exact format:\n1. First: JSON query intent inside ```json``` block\n2. Then: ---RESPONSE--- separator\n3. Then: Georgian response text\n\nDo NOT skip the JSON or separator!"}
             ],
             temperature=0.7,
-            max_tokens=300
+            max_tokens=500
         )
         
-        response_text = response.choices[0].message.content.strip()
+        full_response = response.choices[0].message.content.strip()
+        
+        # Parse JSON intent and Georgian response
+        query_intent = None
+        response_text = full_response
+        
+        logger.info(f"[AI RESPONSE] Raw response length: {len(full_response)}")
+        logger.info(f"[AI RESPONSE] Contains ---RESPONSE---: {'---RESPONSE---' in full_response}")
+        
+        if "---RESPONSE---" in full_response:
+            parts = full_response.split("---RESPONSE---")
+            intent_part = parts[0].strip()
+            response_text = parts[1].strip() if len(parts) > 1 else ""
+            
+            logger.info(f"[AI RESPONSE] Intent part length: {len(intent_part)}")
+            logger.info(f"[AI RESPONSE] Intent part preview: {intent_part[:200]}")
+            
+            # Extract JSON from intent part (handle markdown code blocks)
+            try:
+                # Remove markdown code block if present
+                clean_intent = intent_part.replace("```json", "").replace("```", "").strip()
+                
+                # Find JSON in the intent part
+                json_start = clean_intent.find("{")
+                json_end = clean_intent.rfind("}") + 1
+                logger.info(f"[AI RESPONSE] JSON positions: start={json_start}, end={json_end}")
+                
+                if json_start >= 0 and json_end > json_start:
+                    json_str = clean_intent[json_start:json_end]
+                    logger.info(f"[AI RESPONSE] Extracted JSON: {json_str[:300]}")
+                    query_intent = json.loads(json_str)
+                    logger.info(f"[QUERY INTENT] ✅ Successfully parsed!")
+                    logger.info(f"[QUERY INTENT] Type: {query_intent.get('type', 'unknown')}")
+                    logger.info(f"[QUERY INTENT] Description: {query_intent.get('query_description', 'N/A')}")
+                    logger.info(f"[QUERY INTENT] Fields needed: {query_intent.get('fields_needed', [])}")
+                    logger.info(f"[QUERY INTENT] Filters: {query_intent.get('filters', {})}")
+                    logger.info(f"[QUERY INTENT] Limit: {query_intent.get('limit', 'N/A')}")
+                    logger.info(f"[QUERY INTENT] Georgian understanding: {query_intent.get('georgian_understanding', {})}")
+                    logger.info(f"[QUERY INTENT] Full JSON: {json.dumps(query_intent, ensure_ascii=False)}")
+                else:
+                    logger.warning(f"[AI RESPONSE] No JSON found in intent part")
+            except json.JSONDecodeError as e:
+                logger.warning(f"[QUERY INTENT] ❌ Failed to parse JSON: {e}")
+                logger.warning(f"[QUERY INTENT] JSON string was: {json_str if 'json_str' in locals() else 'N/A'}")
+                query_intent = {"type": "unknown", "error": str(e)}
+        else:
+            logger.warning(f"[AI RESPONSE] No ---RESPONSE--- separator found in response")
         
         logger.info(f"[RESPONSE] Generated text: {response_text[:100]}")
         logger.info(f"[RESPONSE] Intent: {intent}")
@@ -575,9 +747,10 @@ Generate ONLY the Georgian response text now."""
             response_text = response.choices[0].message.content.strip()
             logger.info(f"[RESPONSE] Regenerated text: {response_text[:100]}")
         
-        return response_text
+        return response_text, query_intent
     except Exception as e:
-        return f"⚠️ Response generation error: {str(e)}"
+        logger.error(f"[RESPONSE] Error: {str(e)}")
+        return f"⚠️ Response generation error: {str(e)}", None
 
 
 class ChatMessage(BaseModel):
@@ -645,15 +818,12 @@ async def chat(request: ChatRequest):
         logger.error(f"[REDIS] Read error: {e}")
         raise HTTPException(status_code=500, detail=f"Redis error: {str(e)}")
     
-    logger.info(f"[INTENT] Detecting intent for query: {user_query[:50]}...")
-    intent_result = extract_intent_and_fields(user_query)
-    intent = intent_result.get("intent", "count_all_my_cars")
-    detected_fields = intent_result.get("detected_fields", [])
-    parameters = intent_result.get("parameters", {})
-    logger.info(f"[INTENT] Detected: {intent}, Fields: {detected_fields}, Params: {parameters}")
+    # AI will decide what to do - no backend intent detection
+    # Just pass all data to AI for intelligent classification
+    logger.info(f"[AI FREEDOM] Passing query to AI for classification and execution")
     
-    # Final safety check before execute_intent
-    logger.info(f"[CHAT] Before execute_intent - filtered_records type: {type(filtered_records)}")
+    # Final safety check
+    logger.info(f"[CHAT] Before AI processing - filtered_records type: {type(filtered_records)}")
     if isinstance(filtered_records, str):
         logger.error(f"[CHAT] CRITICAL: filtered_records is still a string! Converting...")
         try:
@@ -661,12 +831,30 @@ async def chat(request: ChatRequest):
         except:
             filtered_records = []
     
-    logger.info(f"[EXECUTE] Executing intent: {intent}")
-    query_result = execute_intent(intent, filtered_records, parameters)
-    logger.info(f"[EXECUTE] Result records count: {len(query_result.get('records', []))}")
+    # Prepare data for AI to analyze
+    query_result = {
+        "total": len(filtered_records),
+        "records": filtered_records,
+        "author_id": author_id
+    }
     
-    logger.info(f"[RESPONSE] Generating response for intent: {intent}")
-    response_text = generate_response(intent, query_result, user_query)
+    logger.info(f"[AI FREEDOM] Passing {len(filtered_records)} records to AI for analysis")
+    response_text, query_intent = generate_response("ai_decides", query_result, user_query)
+    
+    # Execute AI-generated query if intent was extracted
+    if query_intent and query_intent.get("type") != "unknown":
+        logger.info(f"[CHAT] Executing AI-generated query: {query_intent.get('type')}")
+        query_result = execute_ai_query(query_intent, filtered_records)
+        logger.info(f"[CHAT] Query executed, got {query_result.get('count', 0)} results")
+        
+        # Re-generate response with actual query results
+        logger.info(f"[CHAT] Re-generating response with query results")
+        response_text, _ = generate_response("ai_decides", query_result, user_query)
+        logger.info(f"[CHAT] Response regenerated with actual data")
+    
+    # Extract intent from AI's response
+    intent = "ai_classified"
+    detected_fields = []
     
     response_data = {
         "response": response_text,

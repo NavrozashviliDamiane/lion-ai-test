@@ -13,5 +13,8 @@ venv/
 # Exclude all .md files except test_rule.md
 *.md
 !test_rule.md
+# Include JSON context files
+!response-example.json
+!fields_context_concise.json
 .DS_Store
 *.log
