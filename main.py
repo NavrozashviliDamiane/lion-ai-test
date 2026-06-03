@@ -151,8 +151,22 @@ def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
     # Apply filters
     if filters:
         for field, value in filters.items():
-            logger.info(f"[EXECUTE AI QUERY] Filtering by {field} = {value}")
-            filtered = [r for r in filtered if r.get(field) == value]
+            if isinstance(value, dict):
+                # Handle complex filters like {"$ne": "value"}
+                if "$ne" in value:
+                    exclude_value = value["$ne"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} != {exclude_value}")
+                    filtered = [r for r in filtered if r.get(field) != exclude_value]
+                elif "$in" in value:
+                    include_values = value["$in"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} in {include_values}")
+                    filtered = [r for r in filtered if r.get(field) in include_values]
+                else:
+                    logger.warning(f"[EXECUTE AI QUERY] Unknown filter operator: {value}")
+            else:
+                # Simple equality filter
+                logger.info(f"[EXECUTE AI QUERY] Filtering by {field} = {value}")
+                filtered = [r for r in filtered if r.get(field) == value]
     
     logger.info(f"[EXECUTE AI QUERY] After filtering: {len(filtered)} records")
     
@@ -193,19 +207,26 @@ def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
         result_records = filtered
     
     # Extract only requested fields if specified
+    extracted_records = []
     if fields_needed and result_records:
-        result_records = [
+        extracted_records = [
             {field: record.get(field) for field in fields_needed if field in record}
             for record in result_records
         ]
     
     logger.info(f"[EXECUTE AI QUERY] Returning {len(result_records)} records")
     
-    return {
+    result = {
         "count": len(result_records),
         "total": len(records),
-        "records": result_records
+        "records": extracted_records  # Only extracted fields, not full records
     }
+    
+    # For filter/random queries, also return extracted data for AI formatting
+    if query_type in ["filter", "random"] and extracted_records:
+        result["extracted_data"] = extracted_records
+    
+    return result
 
 
 def get_response_example_structure() -> str:
@@ -540,6 +561,7 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
             "count": result.get("count", 0),
             "current_count": result.get("current_count"),
             "archive_count": result.get("archive_count"),
+            "extracted_data": result.get("extracted_data"),  # Only extracted fields for AI to format
             "total_balance": result.get("total_balance"),
             "currency": result.get("currency"),
             "period": result.get("period"),
@@ -619,7 +641,9 @@ STEP 3 - RESPOND NATURALLY:
 Generate response based on the query results.
 Be conversational, precise, contextual.
 Use Georgian naturally.
-Provide actual data from the query.
+If "extracted_data" is provided, use it to format the response with actual VINs, models, years, etc.
+If only counts are provided, describe the results using those numbers.
+Never hallucinate data - use only what's in extracted_data or counts.
 
 CRITICAL RULES:
 - FIRST output the JSON query intent
