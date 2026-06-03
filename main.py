@@ -605,16 +605,25 @@ YOUR TASK:
 
 STEP 1 - UNDERSTAND THE GEORGIAN QUERY:
 - Read the user's Georgian question carefully
-- Match Georgian words to FIELD DEFINITIONS using Georgian synonyms (after |)
+- SEMANTIC VALIDATION: Match Georgian words to FIELD DEFINITIONS using Georgian synonyms (after |)
+- FUZZY MATCHING: Handle typos and variations (e.g., "ვინი" → "ვინ კოდი", "წელი" → "year")
+- STRICT VALIDATION: For each Georgian word in the query:
+  1. Check exact match in field synonyms
+  2. Check partial/fuzzy match (handle typos, missing letters, extra letters)
+  3. Check semantic similarity (meaning-based matching)
+  4. If no match found, ask for clarification or use context
 - Examples:
   * "ვინ კოდი" → vin field (17-char vehicle identifier)
+  * "ვინი" (typo) → vin field (fuzzy match)
   * "წელი" → year field (manufacturing year)
+  * "წელი" (typo variations) → year field
   * "საწყობი" → warehouse field (location)
   * "დილერი" → author field (dealer name)
   * "რამდენი" → COUNT query (how many)
   * "რომელი" → FILTER query (which ones)
   * "რენდომად" → pick any/random record
   * "ნებისმიერი" → any/random
+- ALWAYS cross-reference with fields_context_concise.json Georgian synonyms
 - Understand what the user really wants
 - Determine what query is needed
 
@@ -655,10 +664,24 @@ CRITICAL RULES:
 - If user asks for "any/random", pick one record
 - If user asks for counts, calculate from data
 - If user asks for specific field, extract it
-- Match Georgian words to fields using synonyms
+
+SEMANTIC & FUZZY VALIDATION (STRICT):
 - ALWAYS validate field names against FIELD DEFINITIONS (check Georgian synonyms)
+- For EACH Georgian word in user query:
+  1. Search fields_context_concise.json for exact match in synonyms
+  2. If no exact match, apply fuzzy matching (Levenshtein distance, handle typos)
+  3. If still no match, check semantic meaning (what does the word mean?)
+  4. Log the validation: "Matched 'ვინი' (typo) to 'vin' field via fuzzy matching"
+  5. If uncertain, ask user for clarification
+- NEVER guess field names - validate strictly
+- Document all field mappings in georgian_understanding
+- Include confidence level if fuzzy match (e.g., "ვინი" 95% match to "vin")
+
+DATA USAGE RULES:
 - Use the actual data provided in result_summary (current_count, archive_count, etc)
 - Never hallucinate numbers - use only data from result_summary
+- If extracted_data is provided, use ONLY those records for response formatting
+- Never invent VINs, years, or other data
 
 OUTPUT FORMAT:
 ```json
