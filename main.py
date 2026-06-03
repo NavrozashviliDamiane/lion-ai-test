@@ -54,23 +54,99 @@ class ContextBundle:
         self.business_rules = ""
         self.redis_rules = ""
         self.response_example = []
+        self.lion_system = ""
+        self.lion_intents = ""
+        self.lion_fields = ""
+        self.lion_finance_fields = ""
+        self.lion_synonyms = ""
+        self.lion_examples = ""
+        self.response_rules = ""
+        self.full_context = ""  # Combined context for all files
         self.load_contexts()
     
     def load_contexts(self):
-        try:
-            with open("lion_ai_rule.md", "r", encoding="utf-8") as f:
-                self.business_rules = f.read()
+        import os
+        
+        # List of files to load with their attribute names
+        files_to_load = [
+            ("lion_ai_rule.md", "business_rules"),
+            ("redis_query_rules.md", "redis_rules"),
+            ("response-example.json", "response_example", "json"),
+            ("lion_system.md", "lion_system"),
+            ("lion_intents.md", "lion_intents"),
+            ("lion_fields.md", "lion_fields"),
+            ("lion_finance-fields.md", "lion_finance_fields"),
+            ("lion_synonyms.md", "lion_synonyms"),
+            ("lion_examples.md", "lion_examples"),
+            ("response-rules.md", "response_rules"),
+        ]
+        
+        loaded_files = []
+        missing_files = []
+        
+        for file_info in files_to_load:
+            filename = file_info[0]
+            attr_name = file_info[1]
+            file_type = file_info[2] if len(file_info) > 2 else "text"
             
-            with open("redis_query_rules.md", "r", encoding="utf-8") as f:
-                self.redis_rules = f.read()
-            
-            with open("response-example.json", "r", encoding="utf-8") as f:
-                self.response_example = json.load(f)
-            
-            logger.info("[OK] Context loaded: business rules, redis rules, and response example")
-        except Exception as e:
-            logger.error(f"[ERROR] Error loading context: {e}")
-            raise
+            try:
+                if os.path.exists(filename):
+                    if file_type == "json":
+                        with open(filename, "r", encoding="utf-8") as f:
+                            setattr(self, attr_name, json.load(f))
+                    else:
+                        with open(filename, "r", encoding="utf-8") as f:
+                            setattr(self, attr_name, f.read())
+                    loaded_files.append(filename)
+                else:
+                    missing_files.append(filename)
+                    logger.warning(f"[WARN] Context file not found: {filename}")
+            except Exception as e:
+                missing_files.append(filename)
+                logger.warning(f"[WARN] Error loading {filename}: {e}")
+        
+        if loaded_files:
+            logger.info(f"[OK] Context loaded: {len(loaded_files)} files - {', '.join(loaded_files)}")
+        
+        if missing_files:
+            logger.warning(f"[WARN] {len(missing_files)} context files missing: {', '.join(missing_files)}")
+            logger.warning("[WARN] System will continue with available context. Some features may be limited.")
+        
+        # Build combined full context
+        self._build_full_context()
+    
+    def _build_full_context(self):
+        """Build a comprehensive context string with all loaded files"""
+        context_sections = []
+        
+        if self.lion_system:
+            context_sections.append(f"=== SYSTEM RULES ===\n{self.lion_system}\n")
+        
+        if self.lion_intents:
+            context_sections.append(f"=== SUPPORTED INTENTS ===\n{self.lion_intents}\n")
+        
+        if self.lion_fields:
+            context_sections.append(f"=== FIELD DEFINITIONS ===\n{self.lion_fields}\n")
+        
+        if self.lion_finance_fields:
+            context_sections.append(f"=== FINANCIAL FIELDS ===\n{self.lion_finance_fields}\n")
+        
+        if self.lion_synonyms:
+            context_sections.append(f"=== SYNONYMS & NORMALIZATION ===\n{self.lion_synonyms}\n")
+        
+        if self.lion_examples:
+            context_sections.append(f"=== QUERY EXAMPLES ===\n{self.lion_examples}\n")
+        
+        if self.business_rules:
+            context_sections.append(f"=== BUSINESS RULES ===\n{self.business_rules}\n")
+        
+        if self.response_rules:
+            context_sections.append(f"=== RESPONSE RULES ===\n{self.response_rules}\n")
+        
+        if self.redis_rules:
+            context_sections.append(f"=== REDIS CACHING RULES ===\n{self.redis_rules}\n")
+        
+        self.full_context = "\n".join(context_sections)
 
 context_bundle = ContextBundle()
 
@@ -99,16 +175,9 @@ def extract_vin_from_query(query: str) -> Optional[str]:
 def extract_intent_and_fields(user_query: str) -> Dict[str, Any]:
     system_prompt = f"""You are an intent detection system for a Georgian car dealer management chatbot.
 
-Business Context:
-{context_bundle.business_rules}
+{context_bundle.full_context}
 
-Analyze the user's Georgian query and return a JSON object with:
-- "intent": The most likely intent from the available intents
-- "detected_fields": List of field names that are relevant to this query
-- "confidence": Confidence score (0-1)
-- "parameters": Any extracted parameters (like VIN, dates, numbers)
-
-Available intents:
+CRITICAL: You MUST only use these exact intents:
 - count_all_my_cars
 - count_by_record_status
 - sum_total_balance
@@ -119,6 +188,15 @@ Available intents:
 - cars_by_location_or_stage
 - records_by_period
 - missing_documents_or_title
+
+Analyze the user's Georgian query and return a JSON object with:
+- "intent": MUST be one of the exact intents listed above
+- "detected_fields": List of field names that are relevant to this query
+- "confidence": Confidence score (0-1)
+- "parameters": Any extracted parameters (like VIN, dates, numbers)
+
+IMPORTANT: If you cannot determine the intent with confidence, return:
+{{"intent": "count_all_my_cars", "detected_fields": ["author"], "confidence": 0.5, "parameters": {{}}}}
 
 Respond ONLY with valid JSON, no additional text."""
 
@@ -154,6 +232,9 @@ Respond ONLY with valid JSON, no additional text."""
         if vin and result.get("intent") in ["vehicle_by_vin", "vehicle_finance_by_vin"]:
             result["parameters"]["vin"] = vin
         
+        # Validate intent
+        result = validate_intent(result)
+        
         return result
     except Exception as e:
         print(f"Error in intent extraction: {e}")
@@ -163,6 +244,32 @@ Respond ONLY with valid JSON, no additional text."""
             "confidence": 0.0,
             "parameters": {}
         }
+
+
+def validate_intent(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate that the detected intent is in the list of supported intents"""
+    valid_intents = [
+        "count_all_my_cars",
+        "count_by_record_status",
+        "sum_total_balance",
+        "cars_with_positive_balance",
+        "vehicle_by_vin",
+        "vehicle_finance_by_vin",
+        "group_by_make_model_year",
+        "cars_by_location_or_stage",
+        "records_by_period",
+        "missing_documents_or_title"
+    ]
+    
+    intent = result.get("intent", "count_all_my_cars")
+    
+    if intent not in valid_intents:
+        logger.warning(f"[INTENT] Invalid intent detected: {intent}. Defaulting to count_all_my_cars")
+        result["intent"] = "count_all_my_cars"
+        result["detected_fields"] = ["author"]
+        result["confidence"] = 0.3
+    
+    return result
 
 
 def filter_records_by_author(records: List[Dict], author_id: int) -> List[Dict]:
@@ -377,8 +484,9 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant.
 
-Business Rules and Context:
-{context_bundle.business_rules}
+{context_bundle.full_context}
+
+IMPORTANT: You are NOT generating JSON. You are generating a human-readable Georgian response.
 
 The user asked: {user_query}
 The system detected intent: {intent}
@@ -390,21 +498,38 @@ Generate a natural, concise Georgian response that:
 3. Is business-appropriate and helpful
 4. Uses Georgian language naturally
 5. Keep it brief (1-3 sentences max)
-6. Follow the response guidelines from business rules
+6. Follow the response rules for the detected intent
 
-Respond in Georgian only."""
+DO NOT return JSON. Return ONLY Georgian text response."""
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "Please provide the response in Georgian."}
+                {"role": "user", "content": f"User query: {user_query}\n\nProvide a natural Georgian response based on the query result summary above. Do not return JSON or code."}
             ],
             temperature=0.7,
             max_tokens=300
         )
         
-        return response.choices[0].message.content.strip()
+        response_text = response.choices[0].message.content.strip()
+        
+        # Safety check: if response looks like JSON, extract the intent and regenerate
+        if response_text.startswith("{") and response_text.endswith("}"):
+            logger.warning(f"[RESPONSE] AI returned JSON instead of Georgian text. Regenerating...")
+            # Retry with stricter instructions
+            response = client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a Georgian language assistant. You ONLY respond in Georgian language. Never return JSON, code, or any structured format. Only return natural Georgian text."},
+                    {"role": "user", "content": f"User asked: {user_query}\n\nBased on the data: {json.dumps(result_summary, ensure_ascii=False)}\n\nRespond in Georgian only. No JSON. No code. Only Georgian text."}
+                ],
+                temperature=0.7,
+                max_tokens=300
+            )
+            response_text = response.choices[0].message.content.strip()
+        
+        return response_text
     except Exception as e:
         return f"⚠️ Response generation error: {str(e)}"
 
