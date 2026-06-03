@@ -1,3 +1,5 @@
+import sys
+import io
 import json
 import redis
 import os
@@ -14,15 +16,20 @@ from database import fetch_author_data
 
 os.makedirs('logs', exist_ok=True)
 
+# Configure logging with UTF-8 encoding BEFORE wrapping stdout
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/chat_ai.log'),
+        logging.FileHandler('logs/chat_ai.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Fix console encoding for Georgian characters on Windows (after logging setup)
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 
 app = FastAPI(title="Lion Trans Chat AI", version="1.0.0")
 
@@ -51,7 +58,9 @@ except Exception as e:
 
 class ContextBundle:
     def __init__(self):
-        self.test_rule = ""  # Only test_rule.md
+        self.test_rule = ""  # test_rule.md
+        self.redis_guide = ""  # redis_query_guide.md
+        self.response_example = None  # response-example.json
         self.full_context = ""  # Combined context
         self.load_contexts()
     
@@ -59,8 +68,11 @@ class ContextBundle:
         import os
         
         # List of files to load with their attribute names
+        # Format: (filename, attribute_name, file_type)
         files_to_load = [
-            ("test_rule.md", "test_rule"),
+            ("test_rule.md", "test_rule", "text"),
+            ("redis_query_guide.md", "redis_guide", "text"),
+            ("response-example.json", "response_example", "json"),
         ]
         
         loaded_files = []
@@ -101,8 +113,16 @@ class ContextBundle:
         """Build a comprehensive context string with loaded files"""
         context_sections = []
         
+        if self.redis_guide:
+            context_sections.append(f"## REDIS QUERY GUIDE\n{self.redis_guide}\n")
+        
         if self.test_rule:
-            context_sections.append(f"{self.test_rule}\n")
+            context_sections.append(f"## TEST RULES\n{self.test_rule}\n")
+        
+        if self.response_example:
+            # Format response example as readable context
+            example_str = json.dumps(self.response_example, ensure_ascii=False, indent=2)
+            context_sections.append(f"## DATA STRUCTURE EXAMPLE\nHere is an example of the actual data structure in Redis:\n```json\n{example_str}\n```\n")
         
         self.full_context = "\n".join(context_sections)
 
@@ -410,6 +430,13 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
         return {"error": str(e)}
 
 
+def log_redis_query_logic(user_query: str, intent: str, query_logic: str):
+    """Log the Redis query logic that AI created"""
+    logger.info(f"[REDIS QUERY] User Query: {user_query[:80]}")
+    logger.info(f"[REDIS QUERY] Intent: {intent}")
+    logger.info(f"[REDIS QUERY] Logic: {query_logic}")
+
+
 def generate_response(intent: str, result: Dict, user_query: str) -> str:
     if "error" in result and not result.get("found") and not result.get("records"):
         return f"❌ {result['error']}"
@@ -442,25 +469,39 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         print(f"[DEBUG] Response summary: {result_summary}")
         
-        system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant.
+        system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant with Redis query generation capabilities.
 
 {context_bundle.full_context}
 
-IMPORTANT: You are NOT generating JSON. You are generating a human-readable Georgian response.
+IMPORTANT INSTRUCTIONS:
+1. You are NOT generating JSON responses - you generate human-readable Georgian text
+2. You MUST understand the Redis data structure from the DATA STRUCTURE EXAMPLE above
+3. You MUST follow the TEST RULES for response formatting
+4. You MUST use the REDIS QUERY GUIDE to understand query patterns
 
-The user asked: {user_query}
-The system detected intent: {intent}
-The query result summary is: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
+QUERY ANALYSIS:
+User asked: {user_query}
+System detected intent: {intent}
+Query result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
 
-Generate a natural, concise Georgian response that:
-1. Answers the user's question directly
-2. Presents numbers and data clearly
-3. Is business-appropriate and helpful
-4. Uses Georgian language naturally
-5. Keep it brief (1-3 sentences max)
-6. Follow the response rules for the detected intent
+YOUR TASK:
+1. FIRST: Analyze what Redis query you would create based on:
+   - The user's question
+   - The detected intent
+   - The data structure example
+   - Available fields in the data
 
-DO NOT return JSON. Return ONLY Georgian text response."""
+2. THEN: Generate a natural Georgian response using the provided result summary
+
+RESPONSE REQUIREMENTS:
+- Answer the user's question directly
+- Present numbers and data clearly
+- Use Georgian language naturally
+- Keep it brief (1-3 sentences max)
+- Follow the response rules for the detected intent
+- ONLY return Georgian text, NO JSON, NO code, NO query descriptions
+
+Generate ONLY the Georgian response text now."""
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -478,6 +519,29 @@ DO NOT return JSON. Return ONLY Georgian text response."""
         logger.info(f"[RESPONSE] Intent: {intent}")
         logger.info(f"[RESPONSE] Query: {user_query}")
         logger.info(f"[RESPONSE] Result summary keys: {list(result_summary.keys())}")
+        
+        # Log the Redis query logic that AI would use
+        logger.info(f"[REDIS QUERY] User asked: {user_query[:80]}")
+        logger.info(f"[REDIS QUERY] Intent detected: {intent}")
+        logger.info(f"[REDIS QUERY] Data structure available: {list(context_bundle.response_example[0].keys()) if context_bundle.response_example else 'None'}")
+        
+        # Log specific query details based on intent
+        if intent == "count_all_my_cars":
+            logger.info(f"[REDIS QUERY] Pattern: Count All Records - Total: {result.get('total', 0)}")
+            logger.info(f"[REDIS QUERY] Query Logic: GET author_records:{{author_id}} -> COUNT all records")
+        elif intent == "vehicle_by_vin":
+            vin = result.get('vin', 'N/A')
+            found = result.get('found', False)
+            logger.info(f"[REDIS QUERY] Pattern: VIN Lookup - VIN: {vin}, Found: {found}")
+            logger.info(f"[REDIS QUERY] Query Logic: GET author_records:{{author_id}} -> FILTER by vin='{vin}' -> EXTRACT year, auction_title, buyer_id")
+        elif intent == "sum_total_balance":
+            total_balance = result.get('total_balance', 0)
+            logger.info(f"[REDIS QUERY] Pattern: Sum Balance - Total: {total_balance}")
+            logger.info(f"[REDIS QUERY] Query Logic: GET author_records:{{author_id}} -> SUM field 'balance' for all records")
+        else:
+            logger.info(f"[REDIS QUERY] Pattern: {intent}")
+        
+        logger.info(f"[REDIS QUERY] AI Response: {response_text[:100]}")
         
         # Safety check: if response looks like JSON, extract the intent and regenerate
         if response_text.startswith("{") and response_text.endswith("}"):
@@ -538,40 +602,32 @@ async def chat(request: ChatRequest):
     # Create cache key for author's records (not query-specific)
     author_cache_key = f"author_records:{author_id}"
     
-    # Try to get records from cache first
+    # ONLY query Redis - no database fallback
     filtered_records = None
-    if redis_client:
-        try:
-            cached_data = redis_client.get(author_cache_key)
-            if cached_data:
-                logger.info(f"[CACHE] HIT for author {author_id} records")
-                if isinstance(cached_data, bytes):
-                    cached_data = cached_data.decode('utf-8')
-                filtered_records = json.loads(cached_data)
-                logger.info(f"[CACHE] Retrieved {len(filtered_records)} records from cache")
-        except Exception as e:
-            logger.error(f"[CACHE] Read error: {e}")
+    cached = False
     
-    # If not in cache, fetch from DB
-    if not filtered_records:
-        logger.info(f"[DB] Fetching data for author_id={author_id}")
-        try:
-            records = fetch_author_data(author_id)
-            logger.info(f"[DB] Retrieved {len(records)} records")
-        except Exception as e:
-            logger.error(f"[DB] Error: {e}")
-            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-        
-        filtered_records = filter_records_by_author(records, author_id)
-        logger.info(f"[FILTER] Filtered to {len(filtered_records)} records for author_id={author_id}")
-        
-        # Cache the filtered records
-        if redis_client and filtered_records:
-            try:
-                redis_client.setex(author_cache_key, 3600, json.dumps(filtered_records, ensure_ascii=False))
-                logger.info(f"[CACHE] STORED {len(filtered_records)} records for author {author_id}")
-            except Exception as e:
-                logger.error(f"[CACHE] Write error: {e}")
+    if not redis_client:
+        logger.error(f"[REDIS] Redis client not available")
+        raise HTTPException(status_code=503, detail="Redis service unavailable")
+    
+    try:
+        cached_data = redis_client.get(author_cache_key)
+        if cached_data:
+            logger.info(f"[REDIS] HIT for author {author_id} records")
+            if isinstance(cached_data, bytes):
+                cached_data = cached_data.decode('utf-8')
+            filtered_records = json.loads(cached_data)
+            logger.info(f"[REDIS] Retrieved {len(filtered_records)} records from cache")
+            cached = True
+        else:
+            logger.warning(f"[REDIS] MISS for author {author_id} - no data in Redis")
+            # Return error if data not in Redis
+            raise HTTPException(status_code=404, detail=f"No cached data for author {author_id}. Please load data first.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[REDIS] Read error: {e}")
+        raise HTTPException(status_code=500, detail=f"Redis error: {str(e)}")
     
     logger.info(f"[INTENT] Detecting intent for query: {user_query[:50]}...")
     intent_result = extract_intent_and_fields(user_query)
@@ -600,7 +656,7 @@ async def chat(request: ChatRequest):
         "response": response_text,
         "intent": intent,
         "detected_fields": detected_fields,
-        "cached": False,
+        "cached": cached,
         "timestamp": datetime.now().isoformat(),
         "records": [],
         "session_id": session_id
@@ -658,15 +714,67 @@ async def context_guidance(query: str, author_id: Optional[int] = None):
     }
 
 
+@app.post("/load-data")
+async def load_data(author_id: Optional[int] = None):
+    """Load author data from database into Redis cache"""
+    author_id = author_id or AUTHOR_ID
+    
+    if not redis_client:
+        logger.error(f"[LOAD] Redis not available")
+        raise HTTPException(status_code=503, detail="Redis service unavailable")
+    
+    try:
+        logger.info(f"[LOAD] Starting data load for author_id={author_id}")
+        
+        # Fetch from database
+        records = fetch_author_data(author_id)
+        logger.info(f"[LOAD] Retrieved {len(records)} records from database")
+        
+        if not records:
+            logger.warning(f"[LOAD] No records found for author_id={author_id}")
+            return {
+                "status": "warning",
+                "author_id": author_id,
+                "records_loaded": 0,
+                "message": f"No records found for author {author_id}"
+            }
+        
+        # Filter records for this author
+        filtered_records = filter_records_by_author(records, author_id)
+        logger.info(f"[LOAD] Filtered to {len(filtered_records)} records for author_id={author_id}")
+        
+        # Store in Redis with 24-hour TTL
+        author_cache_key = f"author_records:{author_id}"
+        redis_client.setex(
+            author_cache_key, 
+            86400,  # 24 hours
+            json.dumps(filtered_records, ensure_ascii=False)
+        )
+        logger.info(f"[LOAD] Stored {len(filtered_records)} records in Redis for author {author_id}")
+        
+        return {
+            "status": "success",
+            "author_id": author_id,
+            "records_loaded": len(filtered_records),
+            "cache_key": author_cache_key,
+            "ttl_seconds": 86400,
+            "message": f"Successfully loaded {len(filtered_records)} records into Redis"
+        }
+        
+    except Exception as e:
+        logger.error(f"[LOAD] Error loading data: {e}")
+        raise HTTPException(status_code=500, detail=f"Data load error: {str(e)}")
+
+
 @app.get("/health")
 async def health():
     return {
         "status": "healthy",
         "redis": "connected" if redis_client else "disconnected",
-        "contexts_loaded": bool(context_bundle.business_rules),
+        "contexts_loaded": bool(context_bundle.test_rule),
         "context_files": {
-            "business_rules": "lion_ai_rule.md",
-            "redis_rules": "redis_query_rules.md",
+            "test_rules": "test_rule.md",
+            "redis_guide": "redis_query_guide.md",
             "response_example": "response-example.json"
         }
     }
