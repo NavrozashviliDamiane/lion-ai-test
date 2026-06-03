@@ -281,8 +281,16 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
     
     try:
         if intent == "count_all_my_cars":
+            # Count by record_status
+            current_count = len([r for r in records if r.get("record_status") == "current"])
+            archive_count = len([r for r in records if r.get("record_status") == "archive"])
+            total_count = len(records)
+            
+            logger.info(f"[EXECUTE] Count breakdown - Total: {total_count}, Current: {current_count}, Archive: {archive_count}")
+            
             return {
-                "total": len(records),
+                "total": total_count,
+                "count": current_count,
                 "status": "success"
             }
         
@@ -469,37 +477,45 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         print(f"[DEBUG] Response summary: {result_summary}")
         
-        system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant with Redis query generation capabilities.
+        system_prompt = f"""You are a helpful Georgian-speaking car dealer assistant with Redis query understanding.
 
 {context_bundle.full_context}
 
-IMPORTANT INSTRUCTIONS:
-1. You are NOT generating JSON responses - you generate human-readable Georgian text
-2. You MUST understand the Redis data structure from the DATA STRUCTURE EXAMPLE above
-3. You MUST follow the TEST RULES for response formatting
-4. You MUST use the REDIS QUERY GUIDE to understand query patterns
+HOW THIS WORKS:
+1. You understand what Redis query would be needed (from REDIS QUERY GUIDE)
+2. The backend EXECUTES that Redis query for you
+3. You receive only the RESULTS (counts, data, etc)
+4. You format the response in Georgian following TEST RULES
 
 QUERY ANALYSIS:
 User asked: {user_query}
 System detected intent: {intent}
-Query result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
+Query result summary (from Redis execution): {json.dumps(result_summary, ensure_ascii=False, indent=2)}
 
 YOUR TASK:
-1. FIRST: Analyze what Redis query you would create based on:
-   - The user's question
-   - The detected intent
-   - The data structure example
-   - Available fields in the data
+1. THINK: What Redis query would answer this question?
+   - Use the REDIS QUERY GUIDE to understand patterns
+   - Consider what fields and filtering are needed
+   
+2. RESPOND: Format the results in Georgian
+   - Use the provided result summary
+   - Follow the TEST RULES exactly
+   - Return ONLY Georgian text
 
-2. THEN: Generate a natural Georgian response using the provided result summary
+IMPORTANT:
+- The backend has ALREADY executed the Redis query
+- You receive the RESULTS, not raw data
+- Use the numbers/data provided in the query result summary
+- Do NOT include query logic in your response
+- Do NOT return JSON or code
 
 RESPONSE REQUIREMENTS:
-- Answer the user's question directly
+- Answer the user's question directly using the provided results
 - Present numbers and data clearly
 - Use Georgian language naturally
 - Keep it brief (1-3 sentences max)
 - Follow the response rules for the detected intent
-- ONLY return Georgian text, NO JSON, NO code, NO query descriptions
+- ONLY return Georgian text
 
 Generate ONLY the Georgian response text now."""
 
