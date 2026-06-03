@@ -247,6 +247,7 @@ Example:
    
 Instructions:
 - USE only (record_status, manufacturer, model, year, auction_title, buyer_id, date, auction_pay)
+- DO NOT never  translate  this fields(manufacturer, model, year, auction_title, buyer_id)
 - Do NOT include any other information
 - Do NOT return JSON or structured data
 - Return ONLY the three values separated by commas
