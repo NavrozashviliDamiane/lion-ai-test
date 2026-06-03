@@ -8,7 +8,9 @@ When the user provides ONLY a VIN code (17 characters, format: 1VWAP7A31EC021766
 
 1. Find the vehicle record with matching VIN
 2. Extract ONLY the year field
-3. Respond with ONLY the year in format: "[YEAR]"
+3. Respond with the year in format: "[YEAR]"
+4. Respond with  the Auction Title From field nane "auction_title"
+ 
 
 Example:
 - User input: "1VWAP7A31EC021766"
