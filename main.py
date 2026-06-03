@@ -605,7 +605,8 @@ async def chat(request: ChatRequest):
         "records": [],
         "session_id": session_id
     }
-    
+
+
     
     logger.info(f"[SUCCESS] Session={session_id}, Query completed: {user_query[:50]}... -> {intent}")
     return ChatResponse(**response_data)
