@@ -198,3 +198,39 @@ or port arrival date
 or container opening date
 
 depending on current status.
+
+# VIN PRIMARY LOOKUP RULE
+
+vin
+
+Description:
+VIN is the main vehicle lookup field.
+
+Business Rule:
+If the user provides a full valid VIN, the system must find the vehicle by VIN first.
+
+After the vehicle is found by VIN, all requested fields must be read from that vehicle record.
+
+VIN lookup priority is higher than all other filters.
+
+Rules:
+
+* VIN must be exactly 17 characters.
+* Partial VIN search is not allowed.
+* If full VIN exists in the message, use it as primary lookup key.
+* If user asks about any detail with VIN, return data only for that VIN.
+
+Related fields:
+
+* manufacturer
+* model
+* year
+* date
+* auction_title
+* auction_pay
+* buyer_id
+* total_pay
+* balance
+* record_status
+* photo
+* base_id

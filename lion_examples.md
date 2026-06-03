@@ -74,3 +74,55 @@ OUTPUT:
 "vin":"4T1BF1FK0GU123456",
 "response_type":"financial_details"
 }
+
+USER:
+
+4T1BF1FK0GU123456
+
+OUTPUT:
+
+{
+"intent": "vin_details",
+"vin": "4T1BF1FK0GU123456",
+"response_type": "vehicle_card"
+}
+
+--------------------------------------------------
+
+USER:
+
+რომელ აუქციონზე შევიძინე ავტომობილი 4T1BF1FK0GU123456?
+
+OUTPUT:
+
+{
+"intent": "vin_auction_info",
+"vin": "4T1BF1FK0GU123456",
+"response_type": "auction_info"
+}
+
+--------------------------------------------------
+
+USER:
+
+ამ VIN-ის სტატუსი მაინტერესებს
+
+OUTPUT:
+
+{
+"intent": "vin_status",
+"response_type": "vehicle_status"
+}
+
+--------------------------------------------------
+
+USER:
+
+ფინანსური მდგომარეობა მაჩვენე
+
+OUTPUT:
+
+{
+"intent": "vin_finance",
+"response_type": "financial_details"
+}
