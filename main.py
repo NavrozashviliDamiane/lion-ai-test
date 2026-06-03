@@ -51,17 +51,8 @@ except Exception as e:
 
 class ContextBundle:
     def __init__(self):
-        self.business_rules = ""
-        self.redis_rules = ""
-        self.response_example = []
-        self.lion_system = ""
-        self.lion_intents = ""
-        self.lion_fields = ""
-        self.lion_finance_fields = ""
-        self.lion_synonyms = ""
-        self.lion_examples = ""
-        self.response_rules = ""
-        self.full_context = ""  # Combined context for all files
+        self.test_rule = ""  # Only test_rule.md
+        self.full_context = ""  # Combined context
         self.load_contexts()
     
     def load_contexts(self):
@@ -69,16 +60,7 @@ class ContextBundle:
         
         # List of files to load with their attribute names
         files_to_load = [
-            ("lion_ai_rule.md", "business_rules"),
-            ("redis_query_rules.md", "redis_rules"),
-            ("response-example.json", "response_example", "json"),
-            ("lion_system.md", "lion_system"),
-            ("lion_intents.md", "lion_intents"),
-            ("lion_fields.md", "lion_fields"),
-            ("lion_finance-fields.md", "lion_finance_fields"),
-            ("lion_synonyms.md", "lion_synonyms"),
-            ("lion_examples.md", "lion_examples"),
-            ("response-rules.md", "response_rules"),
+            ("test_rule.md", "test_rule"),
         ]
         
         loaded_files = []
@@ -116,35 +98,11 @@ class ContextBundle:
         self._build_full_context()
     
     def _build_full_context(self):
-        """Build a comprehensive context string with all loaded files"""
+        """Build a comprehensive context string with loaded files"""
         context_sections = []
         
-        if self.lion_system:
-            context_sections.append(f"=== SYSTEM RULES ===\n{self.lion_system}\n")
-        
-        if self.lion_intents:
-            context_sections.append(f"=== SUPPORTED INTENTS ===\n{self.lion_intents}\n")
-        
-        if self.lion_fields:
-            context_sections.append(f"=== FIELD DEFINITIONS ===\n{self.lion_fields}\n")
-        
-        if self.lion_finance_fields:
-            context_sections.append(f"=== FINANCIAL FIELDS ===\n{self.lion_finance_fields}\n")
-        
-        if self.lion_synonyms:
-            context_sections.append(f"=== SYNONYMS & NORMALIZATION ===\n{self.lion_synonyms}\n")
-        
-        if self.lion_examples:
-            context_sections.append(f"=== QUERY EXAMPLES ===\n{self.lion_examples}\n")
-        
-        if self.business_rules:
-            context_sections.append(f"=== BUSINESS RULES ===\n{self.business_rules}\n")
-        
-        if self.response_rules:
-            context_sections.append(f"=== RESPONSE RULES ===\n{self.response_rules}\n")
-        
-        if self.redis_rules:
-            context_sections.append(f"=== REDIS CACHING RULES ===\n{self.redis_rules}\n")
+        if self.test_rule:
+            context_sections.append(f"{self.test_rule}\n")
         
         self.full_context = "\n".join(context_sections)
 
@@ -153,11 +111,7 @@ context_bundle = ContextBundle()
 
 def get_response_example_structure() -> str:
     """Returns a formatted string showing the structure of response data"""
-    if context_bundle.response_example:
-        example = context_bundle.response_example[0]
-        fields = list(example.keys())
-        return f"Available fields: {', '.join(fields[:20])}..."
-    return "No example data available"
+    return "Using test_rule.md for context"
 
 
 def extract_vin_from_query(query: str) -> Optional[str]:
