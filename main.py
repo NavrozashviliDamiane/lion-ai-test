@@ -247,6 +247,15 @@ def format_car_record(record: Dict) -> Dict:
 
 
 def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) -> Any:
+    logger.info(f"[EXECUTE] Records type: {type(records)}, is list: {isinstance(records, list)}")
+    if isinstance(records, str):
+        logger.error(f"[EXECUTE] ERROR: Records is a string, not a list!")
+        try:
+            records = json.loads(records)
+            logger.info(f"[EXECUTE] Converted string to list: {len(records)} records")
+        except:
+            return {"error": "Invalid records format"}
+    
     if not records:
         return {"error": "No records found for this dealer"}
     
@@ -297,6 +306,10 @@ def execute_intent(intent: str, records: List[Dict], parameters: Dict = None) ->
                 
                 if record_vin == search_vin:
                     print(f"[DEBUG] VIN FOUND: {record_vin}")
+                    print(f"[DEBUG] Vehicle record keys: {list(record.keys())}")
+                    print(f"[DEBUG] year: {record.get('year')}")
+                    print(f"[DEBUG] auction_title: {record.get('auction_title')}")
+                    print(f"[DEBUG] buyer_id: {record.get('buyer_id')}")
                     return {
                         "vehicle": record,
                         "found": True
@@ -404,15 +417,8 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
     try:
         vehicle_info = {}
         if result.get("vehicle"):
-            vehicle = result.get("vehicle")
-            vehicle_info = {
-                "vin": vehicle.get("vin"),
-                "manufacturer": vehicle.get("manufacturer"),
-                "model": vehicle.get("model"),
-                "year": vehicle.get("year"),
-                "warehouse": vehicle.get("warehouse"),
-                "record_status": vehicle.get("record_status")
-            }
+            # Pass ALL fields from the vehicle record to the AI
+            vehicle_info = result.get("vehicle")
         
         result_summary = {
             "intent": intent,
@@ -468,6 +474,11 @@ DO NOT return JSON. Return ONLY Georgian text response."""
         
         response_text = response.choices[0].message.content.strip()
         
+        logger.info(f"[RESPONSE] Generated text: {response_text[:100]}")
+        logger.info(f"[RESPONSE] Intent: {intent}")
+        logger.info(f"[RESPONSE] Query: {user_query}")
+        logger.info(f"[RESPONSE] Result summary keys: {list(result_summary.keys())}")
+        
         # Safety check: if response looks like JSON, extract the intent and regenerate
         if response_text.startswith("{") and response_text.endswith("}"):
             logger.warning(f"[RESPONSE] AI returned JSON instead of Georgian text. Regenerating...")
@@ -482,6 +493,7 @@ DO NOT return JSON. Return ONLY Georgian text response."""
                 max_tokens=300
             )
             response_text = response.choices[0].message.content.strip()
+            logger.info(f"[RESPONSE] Regenerated text: {response_text[:100]}")
         
         return response_text
     except Exception as e:
@@ -523,24 +535,25 @@ async def chat(request: ChatRequest):
         logger.warning(f"[CHAT] Empty query from author_id={author_id}")
         raise HTTPException(status_code=400, detail="Empty query")
     
-    cache_key = f"chat:{hashlib.md5(f'{author_id}:{user_query}'.encode()).hexdigest()}"
+    # Create cache key for author's records (not query-specific)
+    author_cache_key = f"author_records:{author_id}"
     
-    # Check if records are cached (not the response)
-    cached_records = None
+    # Try to get records from cache first
+    filtered_records = None
     if redis_client:
         try:
-            cached_data = redis_client.get(cache_key)
+            cached_data = redis_client.get(author_cache_key)
             if cached_data:
-                logger.info(f"[CACHE] HIT for records: {user_query[:50]}...")
-                cached_records = json.loads(cached_data)
+                logger.info(f"[CACHE] HIT for author {author_id} records")
+                if isinstance(cached_data, bytes):
+                    cached_data = cached_data.decode('utf-8')
+                filtered_records = json.loads(cached_data)
+                logger.info(f"[CACHE] Retrieved {len(filtered_records)} records from cache")
         except Exception as e:
             logger.error(f"[CACHE] Read error: {e}")
     
-    # Use cached records if available, otherwise fetch from DB
-    if cached_records:
-        filtered_records = cached_records
-        logger.info(f"[CACHE] Using cached records: {len(filtered_records)} records")
-    else:
+    # If not in cache, fetch from DB
+    if not filtered_records:
         logger.info(f"[DB] Fetching data for author_id={author_id}")
         try:
             records = fetch_author_data(author_id)
@@ -552,11 +565,11 @@ async def chat(request: ChatRequest):
         filtered_records = filter_records_by_author(records, author_id)
         logger.info(f"[FILTER] Filtered to {len(filtered_records)} records for author_id={author_id}")
         
-        # Cache only the records
-        if redis_client:
+        # Cache the filtered records
+        if redis_client and filtered_records:
             try:
-                redis_client.setex(cache_key, 3600, json.dumps(filtered_records, ensure_ascii=False))
-                logger.info(f"[CACHE] STORED records for query: {user_query[:50]}...")
+                redis_client.setex(author_cache_key, 3600, json.dumps(filtered_records, ensure_ascii=False))
+                logger.info(f"[CACHE] STORED {len(filtered_records)} records for author {author_id}")
             except Exception as e:
                 logger.error(f"[CACHE] Write error: {e}")
     
@@ -566,6 +579,15 @@ async def chat(request: ChatRequest):
     detected_fields = intent_result.get("detected_fields", [])
     parameters = intent_result.get("parameters", {})
     logger.info(f"[INTENT] Detected: {intent}, Fields: {detected_fields}, Params: {parameters}")
+    
+    # Final safety check before execute_intent
+    logger.info(f"[CHAT] Before execute_intent - filtered_records type: {type(filtered_records)}")
+    if isinstance(filtered_records, str):
+        logger.error(f"[CHAT] CRITICAL: filtered_records is still a string! Converting...")
+        try:
+            filtered_records = json.loads(filtered_records)
+        except:
+            filtered_records = []
     
     logger.info(f"[EXECUTE] Executing intent: {intent}")
     query_result = execute_intent(intent, filtered_records, parameters)
@@ -584,12 +606,6 @@ async def chat(request: ChatRequest):
         "session_id": session_id
     }
     
-    if redis_client:
-        try:
-            redis_client.setex(cache_key, 3600, json.dumps(response_data, ensure_ascii=False))
-            logger.info(f"[CACHE] STORED result for query: {user_query[:50]}...")
-        except Exception as e:
-            logger.error(f"[CACHE] Write error: {e}")
     
     logger.info(f"[SUCCESS] Session={session_id}, Query completed: {user_query[:50]}... -> {intent}")
     return ChatResponse(**response_data)
