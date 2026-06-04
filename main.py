@@ -170,7 +170,7 @@ def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
     if filters:
         for field, value in filters.items():
             if isinstance(value, dict):
-                # Handle complex filters like {"$ne": "value"}
+                # Handle complex filters like {"$ne": "value"}, {"$lt": 0}, {"$gt": 100}, etc.
                 if "$ne" in value:
                     exclude_value = value["$ne"]
                     logger.info(f"[EXECUTE AI QUERY] Filtering by {field} != {exclude_value}")
@@ -179,6 +179,22 @@ def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
                     include_values = value["$in"]
                     logger.info(f"[EXECUTE AI QUERY] Filtering by {field} in {include_values}")
                     filtered = [r for r in filtered if r.get(field) in include_values]
+                elif "$lt" in value:
+                    threshold = value["$lt"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} < {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) < float(threshold)]
+                elif "$gt" in value:
+                    threshold = value["$gt"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} > {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) > float(threshold)]
+                elif "$lte" in value:
+                    threshold = value["$lte"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} <= {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) <= float(threshold)]
+                elif "$gte" in value:
+                    threshold = value["$gte"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} >= {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) >= float(threshold)]
                 else:
                     logger.warning(f"[EXECUTE AI QUERY] Unknown filter operator: {value}")
             else:
@@ -573,10 +589,12 @@ def generate_response(intent: str, result: Dict, user_query: str, author_id: int
             # Pass ALL fields from the vehicle record to the AI
             vehicle_info = result.get("vehicle")
         
+        # Build result summary with emphasis on counts for calculation queries
         result_summary = {
             "intent": intent,
-            "total": result.get("total", 0),
-            "count": result.get("count", 0),
+            "total_records": result.get("total", 0),
+            "filtered_count": result.get("count", 0),
+            "answer": f"Found {result.get('count', 0)} vehicles matching the criteria" if result.get("count") else None,
             "current_count": result.get("current_count"),
             "archive_count": result.get("archive_count"),
             "extracted_data": result.get("extracted_data"),  # Only extracted fields for AI to format
@@ -614,20 +632,22 @@ def generate_response(intent: str, result: Dict, user_query: str, author_id: int
         else:
             logger.warning(f"[CONTEXT INJECTION] No author_id provided, skipping context injection")
         
-        # Format answer history as context
+        # Format answer history as context - EMPHASIZE CORRECT ANSWERS
         answer_history_context = ""
         if answer_history:
             logger.info(f"[CONTEXT INJECTION] Formatting {len(answer_history)} answers as LLM context")
-            answer_history_context = "\n\nPAST SUCCESSFUL ANSWERS (Learning System Context - from TBL_answer_list):\n"
-            answer_history_context += "These are examples of correct answers for similar questions:\n"
+            answer_history_context = "\n\nLEARNING RULES FROM PAST SUCCESSFUL ANSWERS (TBL_answer_list):\n"
+            answer_history_context += "IMPORTANT: Use these CORRECT ANSWERS to understand field mappings and query logic:\n"
             for i, answer in enumerate(answer_history, 1):
-                answer_history_context += f"\n{i}. Question: {answer['question']}\n"
-                answer_history_context += f"   Answer: {answer['answer']}\n"
+                answer_history_context += f"\n{i}. QUESTION: {answer['question']}\n"
                 if answer['correct_answer']:
-                    answer_history_context += f"   Correct Answer: {answer['correct_answer']}\n"
-                answer_history_context += f"   Quality Rating: {answer['quality']}\n"
+                    answer_history_context += f"   >>> CORRECT ANSWER (USE THIS): {answer['correct_answer']}\n"
+                    answer_history_context += f"   >>> This defines the exact rule/filter/logic for this question\n"
+                answer_history_context += f"   AI Response: {answer['answer']}\n"
+                answer_history_context += f"   Quality: {answer['quality']}\n"
             
             logger.info(f"[CONTEXT INJECTION] ✓ Formatted context length: {len(answer_history_context)} characters")
+            logger.info(f"[CONTEXT INJECTION] ✓ Emphasized CORRECT ANSWERS for LLM learning")
         else:
             logger.info(f"[CONTEXT INJECTION] No answer history to format")
         
@@ -656,6 +676,14 @@ AVAILABLE DATA:
 CONTEXT FOR THIS QUERY:
 User asked (Georgian): {user_query}
 Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}{answer_history_context}
+
+IMPORTANT - USE LEARNING CONTEXT (CRITICAL):
+- Review the LEARNING RULES FROM PAST SUCCESSFUL ANSWERS above
+- FOCUS ON CORRECT ANSWERS: These define the exact field mappings and query logic
+- If current query matches or is similar to past questions, USE THE SAME CORRECT ANSWER LOGIC
+- Example: If past answer says "დავალიანება means f2 < 0", apply this rule to similar queries
+- NEVER ignore or override the correct_answer field - it contains the ground truth
+- Apply exact same filters and field mappings from correct answers
 
 YOUR TASK:
 
@@ -706,6 +734,8 @@ STEP 3 - RESPOND NATURALLY:
 Generate response based on the query results.
 Be conversational, precise, contextual.
 Use Georgian naturally.
+IMPORTANT FOR COUNTS: If "filtered_count" or "answer" is provided in the data, ALWAYS include the specific number in your response.
+Example: If filtered_count = 16, respond with "თქვენ გაქვთ დავალიანება 16 მანქანაზე" (You have debt on 16 vehicles)
 If "extracted_data" is provided, use it to format the response with actual VINs, models, years, etc.
 If only counts are provided, describe the results using those numbers.
 Never hallucinate data - use only what's in extracted_data or counts.
@@ -751,6 +781,8 @@ OUTPUT FORMAT:
         logger.info(f"[CONTEXT INJECTION] ✓ System prompt built successfully")
         logger.info(f"[CONTEXT INJECTION] System prompt size: {len(system_prompt)} characters")
         logger.info(f"[CONTEXT INJECTION] Learning context included: {len(answer_history_context)} characters")
+        if answer_history:
+            logger.info(f"[CONTEXT INJECTION] LLM will use {len(answer_history)} past answers to improve query generation")
         logger.info(f"[CONTEXT INJECTION] Sending to LLM with all 3 context layers...")
 
         response = client.chat.completions.create(
