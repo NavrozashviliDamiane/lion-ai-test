@@ -31,7 +31,7 @@ Example:
 - User input: "1VWAP7A31EC021766"
 - Response: "VIN: [VIN]"
 - Response: "Status: [RECORD_STATUS]"
-- Response: "Vehicle: [MANUFACTURER] [MODEL] [YEAR]"
+- Response: "Vehicle: [MANUFACTURER] - [MODEL] - [YEAR]"
 - Response: "Auction: [AUCTION_TITLE]"
 - Response: "buyer ID: [BUYER_ID]"
 - Response  "Purchase: [DATE]"
