@@ -7,6 +7,7 @@
     "no_hallucination": "If field/record/date/amount doesn't exist, say data not found"
   },
   "fields": {
+    "record_status": "Record status: 'current' (active) or 'archive' (completed) | სტატუსი (მიმდინარე, დასრულებული)",
     "usa_geo": "USA location/destination (USA, Ukraine, Geo, Sale status) | ლოკაცია, სად მიდის",
     "warehouse": "USA warehouse location where vehicle is stored | საწყობი, ამერიკის საწყობი",
     "author": "Dealer name (security: filter by this) | დილერი, ჩემი დილერი",
