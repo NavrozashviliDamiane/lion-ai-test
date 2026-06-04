@@ -12,7 +12,15 @@ import numpy as np
 from openai import OpenAI
 import hashlib
 from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, OPENAI_API_KEY, OPENAI_MODEL, AUTHOR_ID
-from database import fetch_author_data
+from database import (
+    fetch_author_data, 
+    fetch_answer_history, 
+    save_answer_record, 
+    update_answer_quality,
+    get_answer_record,
+    list_answer_records,
+    delete_answer_record
+)
 
 os.makedirs('logs', exist_ok=True)
 
@@ -545,7 +553,7 @@ def log_redis_query_logic(user_query: str, intent: str, query_logic: str):
     logger.info(f"[REDIS QUERY] Logic: {query_logic}")
 
 
-def generate_response(intent: str, result: Dict, user_query: str) -> str:
+def generate_response(intent: str, result: Dict, user_query: str, author_id: int = None) -> str:
     if "error" in result and not result.get("found") and not result.get("records"):
         return f"❌ {result['error']}"
     
@@ -580,6 +588,44 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         print(f"[DEBUG] Response summary: {result_summary}")
         
+        # Fetch answer history for context injection (like field_context_concise)
+        answer_history = []
+        if author_id:
+            logger.info(f"[CONTEXT INJECTION] Starting context fetch for author_id={author_id}")
+            answer_history = fetch_answer_history(author_id, limit=10)
+            logger.info(f"[CONTEXT INJECTION] ✓ Fetched {len(answer_history)} past answers from TBL_answer_list")
+            
+            if answer_history:
+                logger.info(f"[CONTEXT INJECTION] Answer history details:")
+                for i, ans in enumerate(answer_history, 1):
+                    logger.info(f"  [{i}] Q: {ans['question'][:60]}... | Quality: {ans['quality']}")
+            else:
+                logger.info(f"[CONTEXT INJECTION] No answer history found for author_id={author_id}")
+        else:
+            logger.warning(f"[CONTEXT INJECTION] No author_id provided, skipping context injection")
+        
+        # Format answer history as context
+        answer_history_context = ""
+        if answer_history:
+            logger.info(f"[CONTEXT INJECTION] Formatting {len(answer_history)} answers as LLM context")
+            answer_history_context = "\n\nPAST SUCCESSFUL ANSWERS (Learning System Context - from TBL_answer_list):\n"
+            answer_history_context += "These are examples of correct answers for similar questions:\n"
+            for i, answer in enumerate(answer_history, 1):
+                answer_history_context += f"\n{i}. Question: {answer['question']}\n"
+                answer_history_context += f"   Answer: {answer['answer']}\n"
+                if answer['correct_answer']:
+                    answer_history_context += f"   Correct Answer: {answer['correct_answer']}\n"
+                answer_history_context += f"   Quality Rating: {answer['quality']}\n"
+            
+            logger.info(f"[CONTEXT INJECTION] ✓ Formatted context length: {len(answer_history_context)} characters")
+        else:
+            logger.info(f"[CONTEXT INJECTION] No answer history to format")
+        
+        logger.info(f"[CONTEXT INJECTION] Building system prompt with all 3 context layers:")
+        logger.info(f"  [1] Field Context: fields_context.json")
+        logger.info(f"  [2] Agent Context: agent_context_bundle.json")
+        logger.info(f"  [3] Learning Context: TBL_answer_list ({len(answer_history)} records)")
+        
         system_prompt = f"""You are a COMPLETELY FREE AI for Lion Trans car dealer system.
 
 {context_bundle.full_context}
@@ -599,7 +645,7 @@ AVAILABLE DATA:
 
 CONTEXT FOR THIS QUERY:
 User asked (Georgian): {user_query}
-Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
+Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}{answer_history_context}
 
 YOUR TASK:
 
@@ -691,6 +737,11 @@ OUTPUT FORMAT:
 ---RESPONSE---
 
 [Your Georgian response here]"""
+        
+        logger.info(f"[CONTEXT INJECTION] ✓ System prompt built successfully")
+        logger.info(f"[CONTEXT INJECTION] System prompt size: {len(system_prompt)} characters")
+        logger.info(f"[CONTEXT INJECTION] Learning context included: {len(answer_history_context)} characters")
+        logger.info(f"[CONTEXT INJECTION] Sending to LLM with all 3 context layers...")
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -701,6 +752,8 @@ OUTPUT FORMAT:
             temperature=0.7,
             max_tokens=500
         )
+        
+        logger.info(f"[CONTEXT INJECTION] ✓ LLM response received successfully")
         
         full_response = response.choices[0].message.content.strip()
         
@@ -819,6 +872,25 @@ class ChatResponse(BaseModel):
     timestamp: str
     records: List[Dict] = []
     session_id: str
+    record_id: Optional[str] = None
+
+
+class AnswerFeedback(BaseModel):
+    record_id: str
+    quality: str
+    correct_answer: Optional[str] = None
+
+
+class AnswerListRequest(BaseModel):
+    limit: int = 100
+    offset: int = 0
+
+
+class AnswerRecordUpdate(BaseModel):
+    question_text: Optional[str] = None
+    answer_text: Optional[str] = None
+    correct_answer: Optional[str] = None
+    answer_quality: Optional[str] = None
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -886,7 +958,7 @@ async def chat(request: ChatRequest):
     }
     
     logger.info(f"[AI FREEDOM] Passing {len(filtered_records)} records to AI for analysis")
-    response_text, query_intent = generate_response("ai_decides", query_result, user_query)
+    response_text, query_intent = generate_response("ai_decides", query_result, user_query, author_id)
     
     # Execute AI-generated query if intent was extracted
     if query_intent and query_intent.get("type") != "unknown":
@@ -896,7 +968,7 @@ async def chat(request: ChatRequest):
         
         # Re-generate response with actual query results
         logger.info(f"[CHAT] Re-generating response with query results")
-        response_text, _ = generate_response("ai_decides", query_result, user_query)
+        response_text, _ = generate_response("ai_decides", query_result, user_query, author_id)
         logger.info(f"[CHAT] Response regenerated with actual data")
     
     # Extract intent from AI's response
@@ -1143,6 +1215,207 @@ async def aggregation(author_id: Optional[int] = None):
         }
 
 
+@app.post("/answer/feedback")
+async def submit_answer_feedback(feedback: AnswerFeedback):
+    """Submit quality feedback and correct answer for a chat response"""
+    logger.info(f"[FEEDBACK] Received feedback for record {feedback.record_id}")
+    
+    try:
+        success = update_answer_quality(
+            feedback.record_id,
+            feedback.quality,
+            feedback.correct_answer
+        )
+        
+        if success:
+            logger.info(f"[FEEDBACK] Updated record {feedback.record_id} with quality={feedback.quality}")
+            return {
+                "status": "success",
+                "message": "Feedback saved successfully",
+                "record_id": feedback.record_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to update feedback",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[FEEDBACK] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/answer/history")
+async def get_answer_history(author_id: Optional[int] = None, limit: int = 50):
+    """Get past Q&A history for context injection into LLM"""
+    author_id = author_id or AUTHOR_ID
+    logger.info(f"[HISTORY] Fetching answer history for author_id={author_id}")
+    
+    try:
+        history = fetch_answer_history(author_id, limit)
+        return {
+            "status": "success",
+            "author_id": author_id,
+            "count": len(history),
+            "history": history,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[HISTORY] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/admin/answers")
+async def list_answers(author_id: Optional[int] = None, limit: int = 100, offset: int = 0):
+    """Admin endpoint: List all answer records for an author"""
+    author_id = author_id or AUTHOR_ID
+    logger.info(f"[ADMIN] Listing answers for author_id={author_id}, limit={limit}, offset={offset}")
+    
+    try:
+        records, total_count = list_answer_records(author_id, limit, offset)
+        return {
+            "status": "success",
+            "author_id": author_id,
+            "total_count": total_count,
+            "returned_count": len(records),
+            "limit": limit,
+            "offset": offset,
+            "records": records,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error listing answers: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/admin/answers/{record_id}")
+async def get_answer(record_id: str):
+    """Admin endpoint: Get a specific answer record"""
+    logger.info(f"[ADMIN] Fetching answer record: {record_id}")
+    
+    try:
+        record = get_answer_record(record_id)
+        if record:
+            return {
+                "status": "success",
+                "record": record,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Record not found",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error fetching answer: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.put("/admin/answers/{record_id}")
+async def update_answer(record_id: str, update: AnswerRecordUpdate):
+    """Admin endpoint: Update an answer record"""
+    logger.info(f"[ADMIN] Updating answer record: {record_id}")
+    
+    try:
+        from database import get_db_connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        updates = []
+        params = []
+        
+        if update.question_text:
+            updates.append("question_text = %s")
+            params.append(update.question_text)
+        if update.answer_text:
+            updates.append("answer_text = %s")
+            params.append(update.answer_text)
+        if update.correct_answer:
+            updates.append("correct_answer = %s")
+            params.append(update.correct_answer)
+        if update.answer_quality:
+            updates.append("answer_quality = %s")
+            params.append(update.answer_quality)
+        
+        if not updates:
+            return {
+                "status": "error",
+                "message": "No fields to update",
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        params.append(record_id)
+        query = f"UPDATE TBL_answer_list SET {', '.join(updates)} WHERE id = %s"
+        
+        cursor.execute(query, params)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"[ADMIN] Updated record {record_id}")
+        return {
+            "status": "success",
+            "message": "Record updated successfully",
+            "record_id": record_id,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error updating answer: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.delete("/admin/answers/{record_id}")
+async def delete_answer(record_id: str):
+    """Admin endpoint: Delete an answer record"""
+    logger.info(f"[ADMIN] Deleting answer record: {record_id}")
+    
+    try:
+        success = delete_answer_record(record_id)
+        if success:
+            logger.info(f"[ADMIN] Deleted record {record_id}")
+            return {
+                "status": "success",
+                "message": "Record deleted successfully",
+                "record_id": record_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to delete record",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error deleting answer: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
 @app.get("/")
 async def root():
     return {
@@ -1154,7 +1427,13 @@ async def root():
             "health": "GET /health - Health check",
             "cache_refresh": "GET /cache/refresh - Clear all cache",
             "cache_stats": "GET /cache/stats - Cache statistics",
-            "aggregation": "GET /aggregation - Get dealer statistics and aggregations"
+            "aggregation": "GET /aggregation - Get dealer statistics and aggregations",
+            "answer_feedback": "POST /answer/feedback - Submit quality feedback for answers",
+            "answer_history": "GET /answer/history - Get past Q&A history for LLM context",
+            "admin_list_answers": "GET /admin/answers - List all answer records",
+            "admin_get_answer": "GET /admin/answers/{record_id} - Get specific answer record",
+            "admin_update_answer": "PUT /admin/answers/{record_id} - Update answer record",
+            "admin_delete_answer": "DELETE /admin/answers/{record_id} - Delete answer record"
         }
     }
 
