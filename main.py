@@ -5,6 +5,7 @@ import redis
 import os
 import logging
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -40,6 +41,15 @@ if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 
 app = FastAPI(title="Lion Trans Chat AI", version="1.0.0")
+
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -893,6 +903,14 @@ class AnswerRecordUpdate(BaseModel):
     answer_quality: Optional[str] = None
 
 
+class CreateAnswerRecord(BaseModel):
+    question_text: str
+    answer_text: str
+    correct_answer: str
+    author_id: Optional[int] = None
+    chat_name: Optional[str] = None
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     import uuid
@@ -1215,6 +1233,62 @@ async def aggregation(author_id: Optional[int] = None):
         }
 
 
+@app.post("/answer/create")
+async def create_answer_record(data: CreateAnswerRecord):
+    """Create a new answer record manually for learning system"""
+    import uuid
+    from datetime import datetime
+    
+    author_id = data.author_id or AUTHOR_ID
+    
+    # Generate chat_name with timestamp if not provided
+    if not data.chat_name:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        data.chat_name = f"manual_entry_{timestamp}"
+    
+    logger.info(f"[CREATE ANSWER] Creating record for author_id={author_id}, chat_name={data.chat_name}")
+    
+    try:
+        record_id = save_answer_record(
+            chat_name=data.chat_name,
+            author_id=author_id,
+            question_text=data.question_text,
+            answer_text=data.answer_text
+        )
+        
+        # Update with correct answer and quality
+        success = update_answer_quality(
+            record_id=record_id,
+            quality="Good",  # Default quality for manually created records
+            correct_answer=data.correct_answer
+        )
+        
+        if success:
+            logger.info(f"[CREATE ANSWER] ✓ Created record {record_id} with correct answer")
+            return {
+                "status": "success",
+                "message": "Answer record created successfully",
+                "record_id": record_id,
+                "chat_name": data.chat_name,
+                "author_id": author_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.error(f"[CREATE ANSWER] Failed to update correct answer for {record_id}")
+            return {
+                "status": "error",
+                "message": "Failed to update correct answer",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[CREATE ANSWER] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
 @app.post("/answer/feedback")
 async def submit_answer_feedback(feedback: AnswerFeedback):
     """Submit quality feedback and correct answer for a chat response"""
@@ -1428,6 +1502,7 @@ async def root():
             "cache_refresh": "GET /cache/refresh - Clear all cache",
             "cache_stats": "GET /cache/stats - Cache statistics",
             "aggregation": "GET /aggregation - Get dealer statistics and aggregations",
+            "answer_create": "POST /answer/create - Create manual answer record for learning",
             "answer_feedback": "POST /answer/feedback - Submit quality feedback for answers",
             "answer_history": "GET /answer/history - Get past Q&A history for LLM context",
             "admin_list_answers": "GET /admin/answers - List all answer records",
