@@ -29,13 +29,13 @@ When the user provides ONLY a VIN code (17 characters, format: 1VWAP7A31EC021766
 
 Example:
 - User input: "1VWAP7A31EC021766"
-- Response: "VIN: [MANUFACTURER]"
+- Response: "VIN: [VIN]"
 - Response: "Status: [RECORD_STATUS]"
-- Response: "[MANUFACTURER] [MODEL] [YEAR]"
+- Response: "Vehicle: [MANUFACTURER] [MODEL] [YEAR]"
 - Response: "Auction: [AUCTION_TITLE]"
-- Response: "buyer ID [BUYER_ID]"
+- Response: "buyer ID: [BUYER_ID]"
 - Response  "Purchase: [DATE]"
-- Response "Auction Pay [AUCTION_PAY]"
+- Response "Auction Pay: [AUCTION_PAY] USD"
 - 
    
 Instructions:
