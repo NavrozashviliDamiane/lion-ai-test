@@ -5,6 +5,7 @@ import redis
 import os
 import logging
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -12,7 +13,15 @@ import numpy as np
 from openai import OpenAI
 import hashlib
 from config import REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, OPENAI_API_KEY, OPENAI_MODEL, AUTHOR_ID
-from database import fetch_author_data
+from database import (
+    fetch_author_data, 
+    fetch_answer_history, 
+    save_answer_record, 
+    update_answer_quality,
+    get_answer_record,
+    list_answer_records,
+    delete_answer_record
+)
 
 os.makedirs('logs', exist_ok=True)
 
@@ -32,6 +41,15 @@ if sys.stdout.encoding != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
 
 app = FastAPI(title="Lion Trans Chat AI", version="1.0.0")
+
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -152,7 +170,7 @@ def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
     if filters:
         for field, value in filters.items():
             if isinstance(value, dict):
-                # Handle complex filters like {"$ne": "value"}
+                # Handle complex filters like {"$ne": "value"}, {"$lt": 0}, {"$gt": 100}, etc.
                 if "$ne" in value:
                     exclude_value = value["$ne"]
                     logger.info(f"[EXECUTE AI QUERY] Filtering by {field} != {exclude_value}")
@@ -161,6 +179,22 @@ def execute_ai_query(query_intent: Dict, records: List[Dict]) -> Dict:
                     include_values = value["$in"]
                     logger.info(f"[EXECUTE AI QUERY] Filtering by {field} in {include_values}")
                     filtered = [r for r in filtered if r.get(field) in include_values]
+                elif "$lt" in value:
+                    threshold = value["$lt"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} < {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) < float(threshold)]
+                elif "$gt" in value:
+                    threshold = value["$gt"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} > {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) > float(threshold)]
+                elif "$lte" in value:
+                    threshold = value["$lte"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} <= {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) <= float(threshold)]
+                elif "$gte" in value:
+                    threshold = value["$gte"]
+                    logger.info(f"[EXECUTE AI QUERY] Filtering by {field} >= {threshold}")
+                    filtered = [r for r in filtered if r.get(field) is not None and float(r.get(field, 0)) >= float(threshold)]
                 else:
                     logger.warning(f"[EXECUTE AI QUERY] Unknown filter operator: {value}")
             else:
@@ -545,7 +579,7 @@ def log_redis_query_logic(user_query: str, intent: str, query_logic: str):
     logger.info(f"[REDIS QUERY] Logic: {query_logic}")
 
 
-def generate_response(intent: str, result: Dict, user_query: str) -> str:
+def generate_response(intent: str, result: Dict, user_query: str, author_id: int = None) -> str:
     if "error" in result and not result.get("found") and not result.get("records"):
         return f"❌ {result['error']}"
     
@@ -555,10 +589,12 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
             # Pass ALL fields from the vehicle record to the AI
             vehicle_info = result.get("vehicle")
         
+        # Build result summary with emphasis on counts for calculation queries
         result_summary = {
             "intent": intent,
-            "total": result.get("total", 0),
-            "count": result.get("count", 0),
+            "total_records": result.get("total", 0),
+            "filtered_count": result.get("count", 0),
+            "answer": f"Found {result.get('count', 0)} vehicles matching the criteria" if result.get("count") else None,
             "current_count": result.get("current_count"),
             "archive_count": result.get("archive_count"),
             "extracted_data": result.get("extracted_data"),  # Only extracted fields for AI to format
@@ -580,6 +616,46 @@ def generate_response(intent: str, result: Dict, user_query: str) -> str:
         
         print(f"[DEBUG] Response summary: {result_summary}")
         
+        # Fetch answer history for context injection (like field_context_concise)
+        answer_history = []
+        if author_id:
+            logger.info(f"[CONTEXT INJECTION] Starting context fetch for author_id={author_id}")
+            answer_history = fetch_answer_history(author_id, limit=10)
+            logger.info(f"[CONTEXT INJECTION] ✓ Fetched {len(answer_history)} past answers from TBL_answer_list")
+            
+            if answer_history:
+                logger.info(f"[CONTEXT INJECTION] Answer history details:")
+                for i, ans in enumerate(answer_history, 1):
+                    logger.info(f"  [{i}] Q: {ans['question'][:60]}... | Quality: {ans['quality']}")
+            else:
+                logger.info(f"[CONTEXT INJECTION] No answer history found for author_id={author_id}")
+        else:
+            logger.warning(f"[CONTEXT INJECTION] No author_id provided, skipping context injection")
+        
+        # Format answer history as context - EMPHASIZE CORRECT ANSWERS
+        answer_history_context = ""
+        if answer_history:
+            logger.info(f"[CONTEXT INJECTION] Formatting {len(answer_history)} answers as LLM context")
+            answer_history_context = "\n\nLEARNING RULES FROM PAST SUCCESSFUL ANSWERS (TBL_answer_list):\n"
+            answer_history_context += "IMPORTANT: Use these CORRECT ANSWERS to understand field mappings and query logic:\n"
+            for i, answer in enumerate(answer_history, 1):
+                answer_history_context += f"\n{i}. QUESTION: {answer['question']}\n"
+                if answer['correct_answer']:
+                    answer_history_context += f"   >>> CORRECT ANSWER (USE THIS): {answer['correct_answer']}\n"
+                    answer_history_context += f"   >>> This defines the exact rule/filter/logic for this question\n"
+                answer_history_context += f"   AI Response: {answer['answer']}\n"
+                answer_history_context += f"   Quality: {answer['quality']}\n"
+            
+            logger.info(f"[CONTEXT INJECTION] ✓ Formatted context length: {len(answer_history_context)} characters")
+            logger.info(f"[CONTEXT INJECTION] ✓ Emphasized CORRECT ANSWERS for LLM learning")
+        else:
+            logger.info(f"[CONTEXT INJECTION] No answer history to format")
+        
+        logger.info(f"[CONTEXT INJECTION] Building system prompt with all 3 context layers:")
+        logger.info(f"  [1] Field Context: fields_context.json")
+        logger.info(f"  [2] Agent Context: agent_context_bundle.json")
+        logger.info(f"  [3] Learning Context: TBL_answer_list ({len(answer_history)} records)")
+        
         system_prompt = f"""You are a COMPLETELY FREE AI for Lion Trans car dealer system.
 
 {context_bundle.full_context}
@@ -599,7 +675,15 @@ AVAILABLE DATA:
 
 CONTEXT FOR THIS QUERY:
 User asked (Georgian): {user_query}
-Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}
+Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}{answer_history_context}
+
+IMPORTANT - USE LEARNING CONTEXT (CRITICAL):
+- Review the LEARNING RULES FROM PAST SUCCESSFUL ANSWERS above
+- FOCUS ON CORRECT ANSWERS: These define the exact field mappings and query logic
+- If current query matches or is similar to past questions, USE THE SAME CORRECT ANSWER LOGIC
+- Example: If past answer says "დავალიანება means f2 < 0", apply this rule to similar queries
+- NEVER ignore or override the correct_answer field - it contains the ground truth
+- Apply exact same filters and field mappings from correct answers
 
 YOUR TASK:
 
@@ -650,6 +734,8 @@ STEP 3 - RESPOND NATURALLY:
 Generate response based on the query results.
 Be conversational, precise, contextual.
 Use Georgian naturally.
+IMPORTANT FOR COUNTS: If "filtered_count" or "answer" is provided in the data, ALWAYS include the specific number in your response.
+Example: If filtered_count = 16, respond with "თქვენ გაქვთ დავალიანება 16 მანქანაზე" (You have debt on 16 vehicles)
 If "extracted_data" is provided, use it to format the response with actual VINs, models, years, etc.
 If only counts are provided, describe the results using those numbers.
 Never hallucinate data - use only what's in extracted_data or counts.
@@ -691,6 +777,13 @@ OUTPUT FORMAT:
 ---RESPONSE---
 
 [Your Georgian response here]"""
+        
+        logger.info(f"[CONTEXT INJECTION] ✓ System prompt built successfully")
+        logger.info(f"[CONTEXT INJECTION] System prompt size: {len(system_prompt)} characters")
+        logger.info(f"[CONTEXT INJECTION] Learning context included: {len(answer_history_context)} characters")
+        if answer_history:
+            logger.info(f"[CONTEXT INJECTION] LLM will use {len(answer_history)} past answers to improve query generation")
+        logger.info(f"[CONTEXT INJECTION] Sending to LLM with all 3 context layers...")
 
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -701,6 +794,8 @@ OUTPUT FORMAT:
             temperature=0.7,
             max_tokens=500
         )
+        
+        logger.info(f"[CONTEXT INJECTION] ✓ LLM response received successfully")
         
         full_response = response.choices[0].message.content.strip()
         
@@ -819,6 +914,33 @@ class ChatResponse(BaseModel):
     timestamp: str
     records: List[Dict] = []
     session_id: str
+    record_id: Optional[str] = None
+
+
+class AnswerFeedback(BaseModel):
+    record_id: str
+    quality: str
+    correct_answer: Optional[str] = None
+
+
+class AnswerListRequest(BaseModel):
+    limit: int = 100
+    offset: int = 0
+
+
+class AnswerRecordUpdate(BaseModel):
+    question_text: Optional[str] = None
+    answer_text: Optional[str] = None
+    correct_answer: Optional[str] = None
+    answer_quality: Optional[str] = None
+
+
+class CreateAnswerRecord(BaseModel):
+    question_text: str
+    answer_text: str
+    correct_answer: str
+    author_id: Optional[int] = None
+    chat_name: Optional[str] = None
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -886,7 +1008,7 @@ async def chat(request: ChatRequest):
     }
     
     logger.info(f"[AI FREEDOM] Passing {len(filtered_records)} records to AI for analysis")
-    response_text, query_intent = generate_response("ai_decides", query_result, user_query)
+    response_text, query_intent = generate_response("ai_decides", query_result, user_query, author_id)
     
     # Execute AI-generated query if intent was extracted
     if query_intent and query_intent.get("type") != "unknown":
@@ -896,7 +1018,7 @@ async def chat(request: ChatRequest):
         
         # Re-generate response with actual query results
         logger.info(f"[CHAT] Re-generating response with query results")
-        response_text, _ = generate_response("ai_decides", query_result, user_query)
+        response_text, _ = generate_response("ai_decides", query_result, user_query, author_id)
         logger.info(f"[CHAT] Response regenerated with actual data")
     
     # Extract intent from AI's response
@@ -1143,6 +1265,263 @@ async def aggregation(author_id: Optional[int] = None):
         }
 
 
+@app.post("/answer/create")
+async def create_answer_record(data: CreateAnswerRecord):
+    """Create a new answer record manually for learning system"""
+    import uuid
+    from datetime import datetime
+    
+    author_id = data.author_id or AUTHOR_ID
+    
+    # Generate chat_name with timestamp if not provided
+    if not data.chat_name:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        data.chat_name = f"manual_entry_{timestamp}"
+    
+    logger.info(f"[CREATE ANSWER] Creating record for author_id={author_id}, chat_name={data.chat_name}")
+    
+    try:
+        record_id = save_answer_record(
+            chat_name=data.chat_name,
+            author_id=author_id,
+            question_text=data.question_text,
+            answer_text=data.answer_text
+        )
+        
+        # Update with correct answer and quality
+        success = update_answer_quality(
+            record_id=record_id,
+            quality="Good",  # Default quality for manually created records
+            correct_answer=data.correct_answer
+        )
+        
+        if success:
+            logger.info(f"[CREATE ANSWER] ✓ Created record {record_id} with correct answer")
+            return {
+                "status": "success",
+                "message": "Answer record created successfully",
+                "record_id": record_id,
+                "chat_name": data.chat_name,
+                "author_id": author_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.error(f"[CREATE ANSWER] Failed to update correct answer for {record_id}")
+            return {
+                "status": "error",
+                "message": "Failed to update correct answer",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[CREATE ANSWER] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.post("/answer/feedback")
+async def submit_answer_feedback(feedback: AnswerFeedback):
+    """Submit quality feedback and correct answer for a chat response"""
+    logger.info(f"[FEEDBACK] Received feedback for record {feedback.record_id}")
+    
+    try:
+        success = update_answer_quality(
+            feedback.record_id,
+            feedback.quality,
+            feedback.correct_answer
+        )
+        
+        if success:
+            logger.info(f"[FEEDBACK] Updated record {feedback.record_id} with quality={feedback.quality}")
+            return {
+                "status": "success",
+                "message": "Feedback saved successfully",
+                "record_id": feedback.record_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to update feedback",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[FEEDBACK] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/answer/history")
+async def get_answer_history(author_id: Optional[int] = None, limit: int = 50):
+    """Get past Q&A history for context injection into LLM"""
+    author_id = author_id or AUTHOR_ID
+    logger.info(f"[HISTORY] Fetching answer history for author_id={author_id}")
+    
+    try:
+        history = fetch_answer_history(author_id, limit)
+        return {
+            "status": "success",
+            "author_id": author_id,
+            "count": len(history),
+            "history": history,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[HISTORY] Error: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/admin/answers")
+async def list_answers(author_id: Optional[int] = None, limit: int = 100, offset: int = 0):
+    """Admin endpoint: List all answer records for an author"""
+    author_id = author_id or AUTHOR_ID
+    logger.info(f"[ADMIN] Listing answers for author_id={author_id}, limit={limit}, offset={offset}")
+    
+    try:
+        records, total_count = list_answer_records(author_id, limit, offset)
+        return {
+            "status": "success",
+            "author_id": author_id,
+            "total_count": total_count,
+            "returned_count": len(records),
+            "limit": limit,
+            "offset": offset,
+            "records": records,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error listing answers: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.get("/admin/answers/{record_id}")
+async def get_answer(record_id: str):
+    """Admin endpoint: Get a specific answer record"""
+    logger.info(f"[ADMIN] Fetching answer record: {record_id}")
+    
+    try:
+        record = get_answer_record(record_id)
+        if record:
+            return {
+                "status": "success",
+                "record": record,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Record not found",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error fetching answer: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.put("/admin/answers/{record_id}")
+async def update_answer(record_id: str, update: AnswerRecordUpdate):
+    """Admin endpoint: Update an answer record"""
+    logger.info(f"[ADMIN] Updating answer record: {record_id}")
+    
+    try:
+        from database import get_db_connection
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        updates = []
+        params = []
+        
+        if update.question_text:
+            updates.append("question_text = %s")
+            params.append(update.question_text)
+        if update.answer_text:
+            updates.append("answer_text = %s")
+            params.append(update.answer_text)
+        if update.correct_answer:
+            updates.append("correct_answer = %s")
+            params.append(update.correct_answer)
+        if update.answer_quality:
+            updates.append("answer_quality = %s")
+            params.append(update.answer_quality)
+        
+        if not updates:
+            return {
+                "status": "error",
+                "message": "No fields to update",
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        params.append(record_id)
+        query = f"UPDATE TBL_answer_list SET {', '.join(updates)} WHERE id = %s"
+        
+        cursor.execute(query, params)
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"[ADMIN] Updated record {record_id}")
+        return {
+            "status": "success",
+            "message": "Record updated successfully",
+            "record_id": record_id,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error updating answer: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+@app.delete("/admin/answers/{record_id}")
+async def delete_answer(record_id: str):
+    """Admin endpoint: Delete an answer record"""
+    logger.info(f"[ADMIN] Deleting answer record: {record_id}")
+    
+    try:
+        success = delete_answer_record(record_id)
+        if success:
+            logger.info(f"[ADMIN] Deleted record {record_id}")
+            return {
+                "status": "success",
+                "message": "Record deleted successfully",
+                "record_id": record_id,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to delete record",
+                "timestamp": datetime.now().isoformat()
+            }
+    except Exception as e:
+        logger.error(f"[ADMIN] Error deleting answer: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
 @app.get("/")
 async def root():
     return {
@@ -1154,7 +1533,14 @@ async def root():
             "health": "GET /health - Health check",
             "cache_refresh": "GET /cache/refresh - Clear all cache",
             "cache_stats": "GET /cache/stats - Cache statistics",
-            "aggregation": "GET /aggregation - Get dealer statistics and aggregations"
+            "aggregation": "GET /aggregation - Get dealer statistics and aggregations",
+            "answer_create": "POST /answer/create - Create manual answer record for learning",
+            "answer_feedback": "POST /answer/feedback - Submit quality feedback for answers",
+            "answer_history": "GET /answer/history - Get past Q&A history for LLM context",
+            "admin_list_answers": "GET /admin/answers - List all answer records",
+            "admin_get_answer": "GET /admin/answers/{record_id} - Get specific answer record",
+            "admin_update_answer": "PUT /admin/answers/{record_id} - Update answer record",
+            "admin_delete_answer": "DELETE /admin/answers/{record_id} - Delete answer record"
         }
     }
 
