@@ -22,6 +22,7 @@ from database import (
     list_answer_records,
     delete_answer_record
 )
+from embeddings import create_field_embeddings, format_relevant_context
 
 os.makedirs('logs', exist_ok=True)
 
@@ -90,7 +91,6 @@ class ContextBundle:
         files_to_load = [
             ("test_rule.md", "test_rule", "text"),
             ("response-example.json", "response_example", "json"),
-            ("fields_context_concise.json", "fields_context", "json"),
         ]
         
         loaded_files = []
@@ -381,7 +381,22 @@ def validate_intent(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def filter_records_by_author(records: List[Dict], author_id: int) -> List[Dict]:
-    return [r for r in records if r.get("author_id") == author_id or r.get("author") == str(author_id)]
+    print(f"[FILTER DEBUG] Filtering {len(records)} records for author_id={author_id} (type: {type(author_id).__name__})")
+    
+    if records:
+        print(f"[FILTER DEBUG] First record keys: {list(records[0].keys())}")
+        print(f"[FILTER DEBUG] First record author_id value: {records[0].get('author_id')} (type: {type(records[0].get('author_id')).__name__})")
+        print(f"[FILTER DEBUG] First record author value: {records[0].get('author')} (type: {type(records[0].get('author')).__name__})")
+    
+    filtered = [r for r in records if r.get("author_id") == author_id or r.get("author") == str(author_id)]
+    print(f"[FILTER DEBUG] Result: {len(filtered)} records matched")
+    
+    if len(filtered) == 0 and len(records) > 0:
+        print(f"[FILTER DEBUG] No matches! Checking all author_ids in data:")
+        for i, rec in enumerate(records[:3]):
+            print(f"[FILTER DEBUG]   Record {i}: author_id={rec.get('author_id')}, author={rec.get('author')}")
+    
+    return filtered
 
 
 def format_car_record(record: Dict) -> Dict:
@@ -632,33 +647,49 @@ def generate_response(intent: str, result: Dict, user_query: str, author_id: int
         else:
             logger.warning(f"[CONTEXT INJECTION] No author_id provided, skipping context injection")
         
-        # Format answer history as context - EMPHASIZE CORRECT ANSWERS
-        answer_history_context = ""
+        # Build optimized context using semantic search
+        logger.info(f"[CONTEXT INJECTION] Building OPTIMIZED context using semantic search...")
+        
+        unified_context = ""
+        
+        # Part 1: Semantic Field Search (only relevant fields)
+        logger.info(f"[CONTEXT INJECTION] Searching for relevant fields based on query...")
+        relevant_fields_context = format_relevant_context(user_query, top_k=5)
+        if relevant_fields_context:
+            unified_context += relevant_fields_context
+            logger.info(f"[CONTEXT INJECTION] ✓ Found relevant field definitions")
+        
+        # Part 2: Learning Context (from TBL_answer_list)
         if answer_history:
             logger.info(f"[CONTEXT INJECTION] Formatting {len(answer_history)} answers as LLM context")
-            answer_history_context = "\n\nLEARNING RULES FROM PAST SUCCESSFUL ANSWERS (TBL_answer_list):\n"
-            answer_history_context += "IMPORTANT: Use these CORRECT ANSWERS to understand field mappings and query logic:\n"
+            unified_context += "\n=== LEARNED RULES FROM PAST SUCCESSFUL ANSWERS ===\n"
+            unified_context += "These are real examples of how to answer similar questions:\n"
             for i, answer in enumerate(answer_history, 1):
-                answer_history_context += f"\n{i}. QUESTION: {answer['question']}\n"
+                unified_context += f"\n{i}. QUESTION: {answer['question']}\n"
                 if answer['correct_answer']:
-                    answer_history_context += f"   >>> CORRECT ANSWER (USE THIS): {answer['correct_answer']}\n"
-                    answer_history_context += f"   >>> This defines the exact rule/filter/logic for this question\n"
-                answer_history_context += f"   AI Response: {answer['answer']}\n"
-                answer_history_context += f"   Quality: {answer['quality']}\n"
+                    unified_context += f"   ✓ CORRECT ANSWER: {answer['correct_answer']}\n"
+                unified_context += f"   AI Response: {answer['answer']}\n"
+                unified_context += f"   Quality: {answer['quality']}\n"
             
-            logger.info(f"[CONTEXT INJECTION] ✓ Formatted context length: {len(answer_history_context)} characters")
-            logger.info(f"[CONTEXT INJECTION] ✓ Emphasized CORRECT ANSWERS for LLM learning")
+            logger.info(f"[CONTEXT INJECTION] ✓ Formatted {len(answer_history)} learning examples")
         else:
-            logger.info(f"[CONTEXT INJECTION] No answer history to format")
+            logger.info(f"[CONTEXT INJECTION] No answer history to include")
         
-        logger.info(f"[CONTEXT INJECTION] Building system prompt with all 3 context layers:")
-        logger.info(f"  [1] Field Context: fields_context.json")
-        logger.info(f"  [2] Agent Context: agent_context_bundle.json")
-        logger.info(f"  [3] Learning Context: TBL_answer_list ({len(answer_history)} records)")
+        # Part 3: System Rules (minimal)
+        unified_context += "\n=== SYSTEM RULES ===\n"
+        unified_context += "- Filter all results by current dealer\n"
+        unified_context += "- Use field definitions to match Georgian words\n"
+        unified_context += "- Apply learned rules from past answers\n"
+        unified_context += "- Never hallucinate data\n"
+        
+        answer_history_context = unified_context
+        logger.info(f"[CONTEXT INJECTION] ✓ Optimized context length: {len(answer_history_context)} characters (reduced from ~97KB)")
+        
+        logger.info(f"[CONTEXT INJECTION] Building system prompt with 2 context layers:")
+        logger.info(f"  [1] Semantic Field Search: embeddings from fields_context_concise.json")
+        logger.info(f"  [2] Learning Context: TBL_answer_list ({len(answer_history)} records)")
         
         system_prompt = f"""You are a COMPLETELY FREE AI for Lion Trans car dealer system.
-
-{context_bundle.full_context}
 
 YOU HAVE TOTAL FREEDOM:
 - You understand field definitions from FIELD DEFINITIONS section
@@ -677,13 +708,18 @@ CONTEXT FOR THIS QUERY:
 User asked (Georgian): {user_query}
 Current result summary: {json.dumps(result_summary, ensure_ascii=False, indent=2)}{answer_history_context}
 
-IMPORTANT - USE LEARNING CONTEXT (CRITICAL):
-- Review the LEARNING RULES FROM PAST SUCCESSFUL ANSWERS above
-- FOCUS ON CORRECT ANSWERS: These define the exact field mappings and query logic
-- If current query matches or is similar to past questions, USE THE SAME CORRECT ANSWER LOGIC
-- Example: If past answer says "დავალიანება means f2 < 0", apply this rule to similar queries
-- NEVER ignore or override the correct_answer field - it contains the ground truth
-- Apply exact same filters and field mappings from correct answers
+IMPORTANT - USE UNIFIED KNOWLEDGE BASE:
+The context above contains THREE integrated knowledge sources:
+1. FIELD DEFINITIONS: Field names, types, and Georgian synonyms
+2. LEARNED RULES: Real examples from past successful answers
+3. SYSTEM RULES: How to process queries correctly
+
+When answering questions:
+- Match Georgian words using FIELD DEFINITIONS
+- Apply patterns from LEARNED RULES (these are proven correct)
+- Follow SYSTEM RULES for consistency
+- If you've seen a similar question before, use the same logic and filters
+- The CORRECT ANSWER field in learned rules shows the exact expected output
 
 YOUR TASK:
 
@@ -1103,6 +1139,10 @@ async def load_data(author_id: Optional[int] = None):
         records = fetch_author_data(author_id)
         logger.info(f"[LOAD] Retrieved {len(records)} records from database")
         
+        if records:
+            logger.info(f"[LOAD] Sample record structure: {list(records[0].keys())[:10]}")
+            logger.info(f"[LOAD] First record author_id: {records[0].get('author_id', 'NOT FOUND')}")
+        
         if not records:
             logger.warning(f"[LOAD] No records found for author_id={author_id}")
             return {
@@ -1113,8 +1153,20 @@ async def load_data(author_id: Optional[int] = None):
             }
         
         # Filter records for this author
+        logger.info(f"[LOAD] Filtering records by author_id={author_id}")
         filtered_records = filter_records_by_author(records, author_id)
         logger.info(f"[LOAD] Filtered to {len(filtered_records)} records for author_id={author_id}")
+        
+        if len(filtered_records) == 0 and len(records) > 0:
+            logger.warning(f"[LOAD] WARNING: All {len(records)} records were filtered out!")
+            logger.warning(f"[LOAD] Checking author_id field in records:")
+            author_ids_in_data = set()
+            for i, rec in enumerate(records[:5]):
+                aid = rec.get('author_id')
+                author_ids_in_data.add(aid)
+                logger.warning(f"[LOAD]   Record {i}: author_id={aid} (type: {type(aid).__name__})")
+            logger.warning(f"[LOAD] Unique author_ids in data: {author_ids_in_data}")
+            logger.warning(f"[LOAD] Looking for author_id={author_id} (type: {type(author_id).__name__})")
         
         # Store in Redis with 24-hour TTL
         author_cache_key = f"author_records:{author_id}"
@@ -1173,6 +1225,29 @@ async def cache_refresh():
             "message": str(e),
             "timestamp": datetime.now().isoformat()
         }
+
+
+@app.post("/embeddings/create")
+async def create_embeddings():
+    """Create field embeddings from fields_context_concise.json and store in Redis"""
+    try:
+        logger.info(f"[EMBEDDINGS] Starting field embedding creation...")
+        success = create_field_embeddings()
+        
+        if success:
+            logger.info(f"[EMBEDDINGS] ✓ Field embeddings created successfully")
+            return {
+                "status": "success",
+                "message": "Field embeddings created and stored in Redis",
+                "endpoint": "Use /chat with natural language queries"
+            }
+        else:
+            logger.error(f"[EMBEDDINGS] Failed to create embeddings")
+            return {"status": "error", "message": "Failed to create embeddings"}
+    
+    except Exception as e:
+        logger.error(f"[EMBEDDINGS] Error: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/cache/stats")

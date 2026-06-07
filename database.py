@@ -214,7 +214,13 @@ def fetch_author_data(author_id: int) -> list:
             json_str = result[0][0]
             if isinstance(json_str, str):
                 try:
-                    return json.loads(json_str)
+                    records = json.loads(json_str)
+                    # Add author_id to each record if it's missing
+                    if isinstance(records, list):
+                        for record in records:
+                            if 'author_id' not in record or record.get('author_id') is None:
+                                record['author_id'] = author_id
+                    return records
                 except json.JSONDecodeError as je:
                     print(f"JSON decode error at position {je.pos}: {je.msg}")
                     print(f"Total length: {len(json_str)}")
